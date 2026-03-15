@@ -31,13 +31,16 @@
 
   <ItemGroup>
     <Resource Include="DISMLab.png" />
+    <Resource Include="SplashLab.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Resource>
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="DISMLab.png">
+	  <SplashScreen Include="SplashLab.png" />
+	  <None Update="DISMLab.png">
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>
   </ItemGroup>
-
 </Project>
