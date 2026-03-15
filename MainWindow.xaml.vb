@@ -1,0 +1,3964 @@
+﻿Imports System.IO
+Imports System.Management
+Imports System.Net.Http
+Imports System.Runtime.InteropServices
+Imports System.Security.Principal
+Imports System.Text
+Imports System.Text.Json
+Imports System.Text.RegularExpressions
+Imports System.Threading
+Imports System.Diagnostics
+Imports System.Linq
+Imports System.Windows.Interop
+Imports System.Windows.Media.Effects
+Imports System.Windows.Threading
+Imports Microsoft.Win32
+'start
+Class MainWindow
+    Private Shared ReadOnly httpClient As New HttpClient()
+    Private _isMounted As Boolean = False
+    Private _wimPath As String = Nothing
+    Private Const BaseTitle As String = "DISM Lab"
+
+    ' HDD indicator
+    Private _dismBlinkTimer As DispatcherTimer
+    Private _dismActive As Boolean = False
+    Private ReadOnly _rand As New Random()
+
+    ' Size-based progress fields
+    Private _imageSizes As New Dictionary(Of Integer, Long)()
+    Private _expectedMountSizeBytes As Long = 0
+    Private _mountMonitorCts As CancellationTokenSource
+    Dim SnapShotMountSize As Long
+
+    ' Serialize DISM operations to avoid overlapping process executions
+    Private ReadOnly _dismOpLock As New SemaphoreSlim(1, 1)
+
+    ' Debouncing fields for progress updates
+    Private _lastReportedBytes As Long = -1
+    Private _lastReportedPercentage As Integer = -1
+
+    ' Track if an operation is in progress
+    Private _operationInProgress As Boolean = False
+
+    ' Track background DISM/process activity to gate UI controls
+    Private _activeProcessCount As Integer = 0
+
+    ' Cached WinPE manifest details (labpe.log)
+    Private _labPeManifest As LabPeManifestInfo = Nothing
+
+    ' App data paths
+    Private Shared ReadOnly AppStorageRoot As String = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DISM_Lab")
+    Private Shared ReadOnly WinPeRootDirectory As String = ResolveWinPeRootDirectory()
+    Private Shared ReadOnly ManifestFilePath As String = Path.Combine(WinPeRootDirectory, "labpe-manifest.json")
+    Private Shared ReadOnly WinPeMountDirectory As String = Path.Combine(WinPeRootDirectory, "Mount")
+    Private Shared ReadOnly WinPeMediaDirectory As String = Path.Combine(WinPeRootDirectory, "media")
+    Private Shared ReadOnly LogsDirectory As String = Path.Combine(AppStorageRoot, "Logs")
+    Private Shared ReadOnly ImageLogRelativeFolder As String = Path.Combine("DISM_Lab", "Logs")
+    Private Const ImageLogFileName As String = "labpe.log"
+    Private Shared ReadOnly DefaultMountDirectory As String = "C:\Mount"
+    Private ReadOnly _logSyncRoot As New Object()
+
+    ' Store initial mount directory size for progress tracking
+    Private _initialMountDirSize As Long = 0
+
+    ' Store first mount directory size captured during unmount
+    Private _mountDirSize As Long = 0
+
+    ' Fields for driver/update selection UI
+    Private _selectedDriverFiles As New List(Of String)()
+    Private _selectedUpdateFiles As New List(Of String)()
+    Private _driverSelectionMode As Boolean = False
+    Private _updateSelectionMode As Boolean = False
+
+    ' Compiled regex instances (allocation reduction)
+    Private Shared ReadOnly IndexLineRegex As New Regex("^Index\s*:\s*(\d+)$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+    Private Shared ReadOnly NameLineRegex As New Regex("^Name\s*:\s*(.+)$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+    Private Shared ReadOnly DescLineRegex As New Regex("^Description\s*:\s*(.+)$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+    Private Shared ReadOnly SizeLineRegex As New Regex("^Size\s*:\s*([\d,]+)\s*bytes$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+    Private Shared ReadOnly SelectedIndexRegex As New Regex("^Index\s+(\d+):", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+    Private Shared ReadOnly ArchitectureLineRegex As New Regex("^Architecture\s*:\s*(.+)$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+    Private Shared ReadOnly MountDirLineRegex As New Regex("^Mount\s+Dir\s*:\s*(.+)$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+
+    Private Enum WinPeWizardState
+        Idle
+        SelectingArchitecture
+        SelectingOptionalComponents
+    End Enum
+
+    Private Const DwmwaUseImmersiveDarkMode As Integer = 20
+    Private Const MaxFat32PartitionBytes As Long = CLng(32) * 1024 * 1024 * 1024
+    Private Const DefaultBootPartitionBytes As Long = 4L * 1024 * 1024 * 1024
+    Private Const MinBootPartitionBytes As Long = 2L * 1024 * 1024 * 1024
+    Private Const MinDataPartitionBytes As Long = 2L * 1024 * 1024 * 1024
+    Private Const WinPeBootDriveLetter As Char = "P"c
+    Private Const WinPeDataDriveLetter As Char = "I"c
+    Private Const WinPeBootVolumeLabel As String = "WINPE_ARCH"
+    Private Const WinPeDataVolumeLabel As String = "Images"
+
+    Private _winPeState As WinPeWizardState = WinPeWizardState.Idle
+    Private _selectedWinPeArchitecture As String = Nothing
+    Private ReadOnly _winPeArchitectures As IReadOnlyList(Of String) = New List(Of String) From {"x64", "arm64"}
+    Private ReadOnly _winPeOptionalComponents As New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase) From {
+        {"x64", New List(Of String) From {"WinPE-WMI", "WinPE-NetFX", "WinPE-Scripting", "WinPE-PowerShell", "WinPE-StorageWMI", "WinPE-DismCmdlets"}},
+        {"arm64", New List(Of String) From {"WinPE-WMI", "WinPE-NetFX", "WinPE-Scripting", "WinPE-PowerShell", "WinPE-HTA"}}
+    }
+    Private ReadOnly _selectedOptionalComponents As New List(Of String)()
+    Private _wimListBackup As List(Of Object)
+    Private _logListBackup As List(Of Object)
+    Private _hiddenButtonStates As Dictionary(Of UIElement, Visibility)
+    Private _winPeWatcher As FileSystemWatcher
+    Private _winPeManifestPollTimer As DispatcherTimer
+    Private _lastManifestFileStamp As DateTime?
+    Private _lastManifestExists As Boolean = False
+
+    Private ReadOnly Property WinPEMountDir As String
+        Get
+            Return WinPeMountDirectory
+        End Get
+    End Property
+
+    Private Shared Function ResolveWinPeRootDirectory() As String
+        Dim systemRoot = Path.GetPathRoot(Environment.SystemDirectory)
+        Dim preferredRoot = Path.Combine(systemRoot, "WinPE")
+        If Not ContainsWhitespace(preferredRoot) Then
+            Return preferredRoot
+        End If
+
+        Dim preferred = Path.Combine(AppStorageRoot, "WinPE")
+        If Not ContainsWhitespace(preferred) Then
+            Return preferred
+        End If
+
+        Dim commonDataBase = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "DISM_Lab")
+        Dim commonDataPath = Path.Combine(commonDataBase, "WinPE")
+        If Not ContainsWhitespace(commonDataPath) Then
+            Return commonDataPath
+        End If
+
+        Return Path.Combine(systemRoot, "DISM_Lab", "WinPE")
+    End Function
+
+    Private Shared Function ContainsWhitespace(value As String) As Boolean
+        Return Not String.IsNullOrEmpty(value) AndAlso value.Any(AddressOf Char.IsWhiteSpace)
+    End Function
+
+    Private Function GetConfiguredMountDirectory() As String
+        Return DefaultMountDirectory
+    End Function
+
+    Private Function EnsureMountDirectory(ByRef mountPath As String, Optional showErrors As Boolean = True) As Boolean
+        mountPath = GetConfiguredMountDirectory()
+        If String.IsNullOrWhiteSpace(mountPath) Then
+            If showErrors Then
+                MessageBox.Show("Default mount directory is not configured.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            End If
+            Return False
+        End If
+
+        Try
+            Directory.CreateDirectory(mountPath)
+            Return True
+        Catch ex As Exception
+            If showErrors Then
+                MessageBox.Show($"Unable to prepare the mount directory:{Environment.NewLine}{mountPath}{Environment.NewLine}{ex.Message}", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            End If
+            mountPath = Nothing
+            Return False
+        End Try
+    End Function
+
+    Private Sub ShowMountDebugInfo(arguments As String)
+        Debug.WriteLine($"[DISM CMD] {arguments}")
+    End Sub
+
+    Private Class LabPeManifestInfo
+        Public Property Architecture As String
+        Public Property GeneratedOn As Date?
+        Public Property OptionalComponents As List(Of String)
+    End Class
+
+    Private Async Sub MainWindow_Loaded(sender As Object, e As RoutedEventArgs) Handles Me.Loaded
+        Me.Title = BaseTitle
+        EnableDarkTitleBar()
+        If Not IsAdministrator() Then
+            Dim result = MessageBox.Show("This application must be run as Administrator." & vbCrLf &
+                                         "Restart as Administrator now?", "Administrator Required",
+                                         MessageBoxButton.YesNo, MessageBoxImage.Warning)
+            If result = MessageBoxResult.Yes Then
+                Try
+                    Dim psi As New ProcessStartInfo With {
+                        .FileName = Process.GetCurrentProcess().MainModule.FileName,
+                        .UseShellExecute = True,
+                        .Verb = "runas"
+                    }
+                    Process.Start(psi)
+                Catch ex As Exception
+                    MessageBox.Show("Failed to restart as Administrator: " & ex.Message, "Error",
+                                    MessageBoxButton.OK, MessageBoxImage.Error)
+                End Try
+                Application.Current.Shutdown()
+                Return
+            End If
+        End If
+        InitDismIndicators()
+        Await SetBingWallpaperAsync()
+        AddHandler WimImagesListBox.SelectionChanged, AddressOf WimImagesListBox_SelectionChanged
+
+        ' Check mount directory at startup
+        Await CheckMountDirectoryAtStartupAsync()
+
+        Await CheckAndDismountMountedImagesAsync()
+
+        RefreshLabPeManifest()
+        StartWinPeFolderWatcher()
+
+
+    End Sub
+    Private Sub ExitMenuItem_Click(sender As Object, e As RoutedEventArgs)
+        ' Closes the application
+        Application.Current.Shutdown()
+    End Sub
+    Private Sub MainWindow_KeyDown(sender As Object, e As KeyEventArgs) Handles Me.KeyDown
+        If e.Key = Key.Delete Then
+            DeleteEntryButton_Click(Nothing, New RoutedEventArgs())
+        End If
+    End Sub
+    ' New method: Check mount directory at startup with size monitoring
+    Private Async Function CheckMountDirectoryAtStartupAsync() As Task
+        Dim mountPath As String = Nothing
+        If Not EnsureMountDirectory(mountPath, showErrors:=False) Then
+            Return
+        End If
+
+        If Not IsDirectoryEmpty(mountPath) Then
+            Dim initialSize As Long = 0
+            Try
+                initialSize = Await Task.Run(Function() GetDirectorySize(mountPath))
+            Catch
+            End Try
+
+            Dim prompt = "Mount directory is not empty." & Environment.NewLine &
+                         If(initialSize > 0, $"Current size: {FormatBytes(initialSize)}" & Environment.NewLine, "") &
+                         "Attempt /Unmount-WIM /Discard then /Cleanup-Mountpoints automatically?" & Environment.NewLine &
+                         "Yes = Try discard + cleanup" & Environment.NewLine &
+                         "No = Leave as is"
+            Dim resp = MessageBox.Show(prompt, "Mount Directory Not Empty", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+
+            If resp = MessageBoxResult.Yes Then
+                DisableAllControls() ' ✅ Disable during startup cleanup
+
+
+
+
+
+
+
+                Try
+                    _expectedMountSizeBytes = initialSize
+                    PrepareStartupCleanupProgressUi(initialSize)
+
+                    _mountMonitorCts = New CancellationTokenSource()
+                    Dim monitorTask = MonitorUnmountDirAsync(mountPath, _mountMonitorCts.Token)
+
+                    Await RunDismSimpleAsync($" /Unmount-WIM /MountDir:""" & mountPath & """ /Discard")
+
+                    _mountMonitorCts.Cancel()
+                    Try
+                    Catch
+                    End Try
+
+                    If Not IsDirectoryEmpty(mountPath) Then
+                        MessageBox.Show("Directory still not empty. Manual cleanup may be required.", "DISM", MessageBoxButton.OK, MessageBoxImage.Warning)
+                    Else
+                        If MountSizeProgressText IsNot Nothing Then
+                            MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
+                        End If
+                        Await Task.Delay(3000)
+                    End If
+
+                    If MountSizeProgressText IsNot Nothing Then
+                        MountSizeProgressText.Foreground = New SolidColorBrush(Color.FromRgb(&HCC, &HCC, &HCC))
+                    End If
+
+                    ResetMountProgressUi()
+                Finally
+                    EnableAllControls() ' ✅ Re-enable after cleanup
+                End Try
+            End If
+        End If
+
+        UpdateMountDirState()
+    End Function
+
+    ' HELPER: Reset debouncing state when starting new operation
+    Private Sub ResetProgressTracking()
+        _lastReportedBytes = -1
+        _lastReportedPercentage = -1
+    End Sub
+
+    ' Prepare UI for startup cleanup progress (countdown)
+    Private Sub PrepareStartupCleanupProgressUi(initialSize As Long)
+        ResetProgressTracking()
+
+        If MountSizeProgressText IsNot Nothing Then
+            Dim sizeStr = If(initialSize > 0, FormatBytes(initialSize), "Unknown")
+            MountSizeProgressText.Text = $"0%"
+            MountSizeProgressTextDetail.Text = $"{sizeStr} / {sizeStr}"
+            MountSizeProgressText.Visibility = Visibility.Visible
+            MountSizeProgressTextDetail.Visibility = Visibility.Visible
+        End If
+    End Sub
+
+    Private Sub MainWindow_Closed(sender As Object, e As EventArgs) Handles Me.Closed
+        _dismBlinkTimer?.Stop()
+        _mountMonitorCts?.Cancel()
+        StopWinPeFolderWatcher()
+        _dismOpLock.Dispose()
+    End Sub
+
+    Private Sub InitDismIndicators()
+        If _dismBlinkTimer Is Nothing Then
+            _dismBlinkTimer = New DispatcherTimer(TimeSpan.FromMilliseconds(120),
+                                                  DispatcherPriority.Background,
+                                                  AddressOf DismBlinkTick,
+                                                  Dispatcher.CurrentDispatcher)
+        End If
+        UpdateDismLightOff()
+    End Sub
+
+    Private Sub DismBlinkTick(sender As Object, e As EventArgs)
+        If Not _dismActive Then Return
+        Dim sample = _rand.NextDouble()
+        If sample < 0.55 Then
+            DismActivityLight.Fill = New SolidColorBrush(Color.FromRgb(0, 220, 120))
+            DismActivityLight.Effect = New DropShadowEffect With {
+                .Color = Colors.Lime,
+                .BlurRadius = 8,
+                .ShadowDepth = 0,
+                .Opacity = 0.75
+            }
+        ElseIf sample < 0.8 Then
+            UpdateDismLightDim()
+        Else
+            UpdateDismLightOff()
+        End If
+    End Sub
+
+    Private Sub StartDismIndicator()
+        _dismActive = True
+        If _dismBlinkTimer IsNot Nothing AndAlso Not _dismBlinkTimer.IsEnabled Then
+            _dismBlinkTimer.Start()
+        End If
+    End Sub
+
+    Private Sub StopDismIndicator()
+        _dismActive = False
+        _dismBlinkTimer?.Stop()
+        UpdateDismLightOff()
+    End Sub
+
+    Private Sub UpdateDismLightOff()
+        DismActivityLight.Fill = New SolidColorBrush(Color.FromRgb(50, 50, 50))
+        DismActivityLight.Effect = Nothing
+    End Sub
+
+    Private Sub UpdateDismLightDim()
+        DismActivityLight.Fill = New SolidColorBrush(Color.FromRgb(25, 80, 55))
+        DismActivityLight.Effect = Nothing
+    End Sub
+
+    Private Async Function SetBingWallpaperAsync(Optional ct As CancellationToken = Nothing) As Task
+        If Not Await IsInternetAvailableAsync(ct) Then Return
+        Const xmlUrl As String = "https://www.bing.com/HPImageArchive.aspx?format=xml&idx=0&n=1&mkt=en-US"
+        Dim xmlContent As String
+        Try
+            Using resp = Await httpClient.GetAsync(xmlUrl, ct)
+                resp.EnsureSuccessStatusCode()
+                xmlContent = Await resp.Content.ReadAsStringAsync(ct)
+            End Using
+        Catch
+            Return
+        End Try
+
+        Dim doc As XDocument
+        Try
+            doc = XDocument.Parse(xmlContent)
+        Catch
+            Return
+        End Try
+
+        Dim imageElement = doc.Root?.Element("image")
+        If imageElement Is Nothing Then Return
+
+        Dim relativeUrl = imageElement.Element("url")?.Value
+        If String.IsNullOrWhiteSpace(relativeUrl) Then Return
+
+        Dim fullImageUrl = If(relativeUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase),
+                              relativeUrl,
+                              "https://www.bing.com" & relativeUrl)
+
+        Dim imageBytes As Byte()
+        Try
+            imageBytes = Await httpClient.GetByteArrayAsync(fullImageUrl, ct)
+        Catch
+            Return
+        End Try
+
+        Dim bmp As New BitmapImage()
+        Try
+            Using ms As New MemoryStream(imageBytes)
+                bmp.BeginInit()
+                bmp.CacheOption = BitmapCacheOption.OnLoad
+                bmp.StreamSource = ms
+                bmp.EndInit()
+                bmp.Freeze()
+            End Using
+        Catch
+            Return
+        End Try
+
+        Me.Background = New ImageBrush(bmp) With {.Stretch = Stretch.UniformToFill, .AlignmentX = AlignmentX.Center, .AlignmentY = AlignmentY.Center}
+
+        Dim headline = imageElement.Element("headline")?.Value
+        Dim copyright = imageElement.Element("copyright")?.Value
+
+        Await Dispatcher.InvokeAsync(Sub()
+                                         HeadingTextBlock.Text = If(String.IsNullOrWhiteSpace(headline), "Description", headline)
+                                         CopyrightTextBlock.Text = If(String.IsNullOrWhiteSpace(copyright), "Detail", copyright)
+                                     End Sub)
+    End Function
+
+    Private Shared Async Function IsInternetAvailableAsync(Optional ct As CancellationToken = Nothing) As Task(Of Boolean)
+        Try
+            Using resp = Await httpClient.GetAsync("https://www.bing.com", HttpCompletionOption.ResponseHeadersRead, ct)
+                Return resp.IsSuccessStatusCode
+            End Using
+        Catch
+            Return False
+        End Try
+    End Function
+
+    Private Async Sub SelectWimMenuItem_Click(sender As Object, e As RoutedEventArgs)
+        ' Don't allow WIM selection during operations
+        If _operationInProgress Then
+            MessageBox.Show("Please wait for the current operation to complete.", "Operation In Progress", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        Dim dlg As New OpenFileDialog() With {
+            .Filter = "WIM Images|*.wim",
+            .Title = "Select WIM Image",
+            .CheckFileExists = True,
+            .Multiselect = False
+        }
+
+        If dlg.ShowDialog() = True Then
+            DisableAllControls() ' ✅ Disable during DISM info retrieval
+
+            Try
+                _wimPath = dlg.FileName
+                UpdateWindowTitle()
+                WimImagesListBox.Visibility = Visibility.Visible
+                _imageSizes.Clear()
+                Await LoadWimInfoAsync()
+                RestoreMountButtonState()
+            Finally
+                EnableAllControls() ' ✅ Re-enable after completion
+            End Try
+        End If
+    End Sub
+
+    Private Async Function LoadWimInfoAsync() As Task
+        WimImagesListBox.Items.Clear()
+        If WimImagesListBox IsNot Nothing Then
+            WimImagesListBox.SelectionMode = SelectionMode.Single
+        End If
+        If String.IsNullOrEmpty(_wimPath) Then
+            WimImagesListBox.Visibility = Visibility.Collapsed
+            Return
+        End If
+        If Not IsAdministrator() Then
+            WimImagesListBox.Items.Add("Elevation required. Please run as Administrator.")
+            Return
+        End If
+
+        Dim psi As New ProcessStartInfo("dism.exe",
+                                        $" /Get-WimInfo /WimFile:""" & _wimPath & """") With {
+            .UseShellExecute = False,
+            .RedirectStandardOutput = True,
+            .RedirectStandardError = True,
+            .CreateNoWindow = True
+        }
+
+        Dim output As String = ""
+        Try
+            Using p As Process = Process.Start(psi)
+                StartDismIndicator()
+                output = Await p.StandardOutput.ReadToEndAsync()
+                Await p.WaitForExitAsync()
+            End Using
+        Catch ex As Exception
+            WimImagesListBox.Items.Add("Error running DISM: " & ex.Message)
+        Finally
+            StopDismIndicator()
+        End Try
+
+        If String.IsNullOrWhiteSpace(output) Then
+            WimImagesListBox.Items.Add("No output.")
+            Return
+        End If
+
+        ParseAndPopulateWimInfo(output)
+    End Function
+
+    Private Shared Function IsAdministrator() As Boolean
+        Try
+            Dim wi = WindowsIdentity.GetCurrent()
+            Dim wp = New WindowsPrincipal(wi)
+            Return wp.IsInRole(WindowsBuiltInRole.Administrator)
+        Catch
+            Return False
+        End Try
+    End Function
+
+    Private Sub ParseAndPopulateWimInfo(raw As String)
+        Dim lines = raw.Split({ControlChars.Cr, ControlChars.Lf}, StringSplitOptions.RemoveEmptyEntries)
+        Dim currentIndex As Integer? = Nothing
+        Dim currentName As String = Nothing
+        Dim currentDesc As String = Nothing
+        Dim currentSize As Long? = Nothing
+
+        For Each ln In lines
+            Dim line = ln.Trim()
+            Dim mIdx = IndexLineRegex.Match(line)
+            If mIdx.Success Then
+                CommitCurrent(currentIndex, currentName, currentDesc, currentSize)
+                currentIndex = Integer.Parse(mIdx.Groups(1).Value)
+                currentName = Nothing
+                currentDesc = Nothing
+                currentSize = Nothing
+                Continue For
+            End If
+            Dim mName = NameLineRegex.Match(line)
+            If mName.Success Then
+                currentName = mName.Groups(1).Value.Trim()
+                Continue For
+            End If
+            Dim mDesc = DescLineRegex.Match(line)
+            If mDesc.Success Then
+                currentDesc = mDesc.Groups(1).Value.Trim()
+                Continue For
+            End If
+            Dim mSize = SizeLineRegex.Match(line)
+            If mSize.Success Then
+                Dim rawSize = mSize.Groups(1).Value.Replace(",", "")
+                Dim val As Long
+                If Long.TryParse(rawSize, val) Then
+                    currentSize = val
+                End If
+                Continue For
+            End If
+        Next
+        CommitCurrent(currentIndex, currentName, currentDesc, currentSize)
+
+        If WimImagesListBox.Items.Count = 0 Then
+            WimImagesListBox.Items.Add("No image indexes found.")
+        End If
+    End Sub
+
+    Private Sub CommitCurrent(idx As Integer?, name As String, desc As String, sizeBytes As Long?)
+        If idx.HasValue AndAlso Not String.IsNullOrWhiteSpace(name) Then
+            Dim display = $"Index {idx.Value}: {name}" &
+                          If(Not String.IsNullOrWhiteSpace(desc) AndAlso desc <> name, $" - {desc}", "") &
+                          If(sizeBytes.HasValue, $" ({FormatBytes(sizeBytes.Value)})", "")
+
+            ' Create ListBoxItem with Tag for consistent selection handling
+            Dim item As New ListBoxItem With {
+                .Content = display,
+                .Tag = idx.Value
+            }
+            WimImagesListBox.Items.Add(item)
+
+            If sizeBytes.HasValue Then
+                _imageSizes(idx.Value) = sizeBytes.Value
+            End If
+        End If
+    End Sub
+
+    Private Sub SetActionButtonsEnabled(enabled As Boolean)
+        If MountActionButton IsNot Nothing Then MountActionButton.IsEnabled = enabled
+        If ExportImageButton IsNot Nothing Then ExportImageButton.IsEnabled = enabled
+        If ExportDriversButton IsNot Nothing Then ExportDriversButton.IsEnabled = enabled
+        If AddDriversButton IsNot Nothing Then AddDriversButton.IsEnabled = enabled
+        If ApplyUpdatesButton IsNot Nothing Then ApplyUpdatesButton.IsEnabled = enabled
+        If UnmountActionButton IsNot Nothing Then UnmountActionButton.IsEnabled = enabled
+        If OpenMountFolderButton IsNot Nothing Then OpenMountFolderButton.IsEnabled = enabled
+    End Sub
+
+    Private Sub EnterProcessBusyState()
+        Dim newCount = Interlocked.Increment(_activeProcessCount)
+        If newCount = 1 Then
+            Dispatcher.InvokeAsync(Sub() UpdateProcessBoundControls(isBusy:=True), DispatcherPriority.Background)
+        End If
+    End Sub
+
+    Private Sub ExitProcessBusyState()
+        Dim newCount = Interlocked.Decrement(_activeProcessCount)
+        If newCount <= 0 Then
+            Dispatcher.InvokeAsync(Sub() UpdateProcessBoundControls(isBusy:=False), DispatcherPriority.Background)
+        End If
+    End Sub
+
+    Private Sub UpdateProcessBoundControls(isBusy As Boolean)
+        If isBusy Then
+            SetActionButtonsEnabled(False)
+            If OpenMountFolderButton IsNot Nothing Then
+                OpenMountFolderButton.IsEnabled = False
+            End If
+            Return
+        End If
+
+        If Not _operationInProgress Then
+            SetActionButtonsEnabled(True)
+            UpdateActionButtonsState()
+        End If
+        UpdateOpenMountFolderButtonState()
+    End Sub
+
+    ' Disable ALL action buttons and controls during operations
+    Private Sub DisableAllControls()
+        _operationInProgress = True
+
+        ' Disable all action buttons
+        SetActionButtonsEnabled(False)
+
+        ' Newly enforced: Clear + Create WinPE buttons disabled during any DISM operation
+        If ClearButton IsNot Nothing Then ClearButton.IsEnabled = False
+        If _CreateWinPE IsNot Nothing Then _CreateWinPE.IsEnabled = False
+
+        ' Disable mount directory controls
+        DisableMountControls()
+
+        If SelectWimMenuItem IsNot Nothing Then SelectWimMenuItem.IsEnabled = False
+        If ExitMenuItem IsNot Nothing Then ExitMenuItem.IsEnabled = False
+        UpdateWinPEUiState()
+    End Sub
+
+    ' Re-enable controls based on current state
+    Private Sub EnableAllControls()
+        _operationInProgress = False
+
+        If WimImagesListBox IsNot Nothing Then WimImagesListBox.IsEnabled = True
+        If SelectWimMenuItem IsNot Nothing Then SelectWimMenuItem.IsEnabled = True
+        If ExitMenuItem IsNot Nothing Then ExitMenuItem.IsEnabled = True
+
+        ' Re-enable Create WinPE button when not in an operation (allow even if mounted? keep disabled if mounted to avoid conflicts)
+        If _CreateWinPE IsNot Nothing Then
+            _CreateWinPE.IsEnabled = Not _operationInProgress AndAlso Not _isMounted
+        End If
+
+        ' Re-enable Clear button only when a WIM is selected, not mounted, and no operation in progress
+        If ClearButton IsNot Nothing Then
+            ClearButton.IsEnabled = Not _operationInProgress AndAlso Not _isMounted AndAlso Not String.IsNullOrEmpty(_wimPath)
+        End If
+
+        SetActionButtonsEnabled(True)
+        RestoreMountButtonState()
+        UpdateWinPEUiState()
+    End Sub
+
+    ' Legacy method for backward compatibility - now calls DisableAllControls
+    Private Sub DisableActionButtons()
+        DisableAllControls()
+    End Sub
+
+    ' Legacy method for backward compatibility - now calls EnableAllControls
+    Private Sub EnableActionButtons()
+        EnableAllControls()
+    End Sub
+
+    Private Async Sub MountActionButton_Click(sender As Object, e As RoutedEventArgs)
+        If WimImagesListBox.SelectedItems.Count <> 1 Then
+            MessageBox.Show("Select exactly one index to mount.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        DisableAllControls() ' ✅ Updated
+
+
+
+
+
+
+        Try
+            Await MountSelectedImageWithDirCheckAsync()
+        Finally
+            EnableAllControls() ' ✅ Updated
+        End Try
+    End Sub
+
+    Private Function TryGetSelectedIndex(ByRef idx As Integer) As Boolean
+        idx = -1
+        If WimImagesListBox.SelectedItem Is Nothing Then Return False
+
+        ' Handle ListBoxItem with Tag
+        If TypeOf WimImagesListBox.SelectedItem Is ListBoxItem Then
+            Dim item = DirectCast(WimImagesListBox.SelectedItem, ListBoxItem)
+            If item.Tag IsNot Nothing AndAlso TypeOf item.Tag Is Integer Then
+                idx = CInt(item.Tag)
+                Return True
+            End If
+
+            ' Fallback: try to parse textual content inside the ListBoxItem
+            Dim contentText = TryCast(item.Content, String)
+            If Not String.IsNullOrWhiteSpace(contentText) Then
+                Dim matchFromContent = SelectedIndexRegex.Match(contentText)
+                If matchFromContent.Success AndAlso Integer.TryParse(matchFromContent.Groups(1).Value, idx) Then
+                    Return True
+                End If
+            End If
+        End If
+
+        ' Fallback: parse from string (legacy compatibility)
+        Dim selectedText = TryCast(WimImagesListBox.SelectedItem, String)
+        If Not String.IsNullOrWhiteSpace(selectedText) Then
+            Dim m = SelectedIndexRegex.Match(selectedText)
+            If m.Success AndAlso Integer.TryParse(m.Groups(1).Value, idx) Then
+                Return True
+            End If
+        End If
+
+        ' Final fallback: derive index based on list order (1-based like DISM indexes)
+        If WimImagesListBox.SelectedIndex >= 0 Then
+            idx = WimImagesListBox.SelectedIndex + 1
+            Return True
+        End If
+
+        Return False
+    End Function
+
+    Private Async Function MountSelectedImageWithDirCheckAsync() As Task
+        If Not IsAdministrator() Then
+            MessageBox.Show("Administrator privileges required.", "DISM", MessageBoxButton.OK, MessageBoxImage.Warning)
+            Return
+        End If
+        Dim mountPath As String = Nothing
+        If Not EnsureMountDirectory(mountPath) Then
+            Return
+        End If
+
+        ' Disable controls immediately when mount operation starts
+        DisableMountControls()
+
+        If Not IsDirectoryEmpty(mountPath) Then
+            Dim prompt = "Mount directory is not empty." & Environment.NewLine &
+                         "Attempt /Unmount-WIM /Discard then /Cleanup-Mountpoints automatically?" & Environment.NewLine &
+                         "Yes = Try discard + cleanup" & Environment.NewLine &
+                         "No = Cancel"
+            Dim resp = MessageBox.Show(prompt, "Mount Directory Not Empty", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+            If resp = MessageBoxResult.Yes Then
+                Await RunDismSimpleAsync($" /Unmount-WIM /MountDir:""" & mountPath & """ /Discard")
+                Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
+                If Not IsDirectoryEmpty(mountPath) Then
+                    MessageBox.Show("Directory still not empty. Aborting mount.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+                    UpdateMountDirState()
+                    Return
+                End If
+            Else
+                ' Re-enable controls if user cancels
+                UpdateMountDirState()
+                Return
+            End If
+        End If
+
+        Dim idx As Integer
+        If Not TryGetSelectedIndex(idx) Then
+            MessageBox.Show("Could not parse selected index.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            ' Re-enable controls on error
+            UpdateMountDirState()
+            Return
+        End If
+
+        Dim cleanup = Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
+        If cleanup.ExitCode <> 0 Then
+            MessageBox.Show("Cleanup failed:" & Environment.NewLine & cleanup.StdErr, "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            ' Re-enable controls on error
+            UpdateMountDirState()
+            Return
+        End If
+
+        If Not _imageSizes.TryGetValue(idx, _expectedMountSizeBytes) Then
+            _expectedMountSizeBytes = 0
+        End If
+        PrepareMountProgressUi()
+
+        ' Start real-time folder monitoring on separate thread
+        _mountMonitorCts = New CancellationTokenSource()
+        Dim monitorTask = MonitorMountDirAsync(mountPath, _mountMonitorCts.Token)
+
+        Dim args = String.Format("/Mount-WIM /WIMFile:""{0}"" /Index:{1} /MountDir:""{2}""", _wimPath, idx, mountPath)
+
+        ShowMountDebugInfo(args)
+
+        Dim result = Await RunDismSimpleAsync(args)
+
+        ' Stop monitoring
+        _mountMonitorCts.Cancel()
+        Try
+            Await Task.WhenAny(monitorTask, Task.Delay(2000)) ' Wait up to 2 seconds for monitor to finish
+        Catch
+            ' Ignore cancellation exceptions
+        End Try
+
+        If result.ExitCode = 0 Then
+            ' Show success notification in progress panel
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Text = "100%"
+                MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
+            End If
+
+            _isMounted = True
+            UpdateWindowTitle()
+            UpdateMountUi()
+
+            ' Wait 3 seconds to show success, then reset
+            Await Task.Delay(3000)
+
+            ' Reset text color before hiding
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Foreground = New SolidColorBrush(Color.FromRgb(&HCC, &HCC, &HCC))
+            End If
+
+            ResetMountProgressUi()
+
+            ' ✅ NEW: Load and display log file after successful mount
+            Await LoadAndDisplayLogFileAsync(mountPath)
+        Else
+            MessageBox.Show("Mount failed (code " & result.ExitCode & "):" & Environment.NewLine & result.StdErr, "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            ResetMountProgressUi()
+        End If
+
+        ' Update MountDir state after mount operation (re-evaluates and enables/disables based on directory)
+        UpdateMountDirState()
+    End Function
+
+    Private Sub PrepareMountProgressUi()
+        ResetProgressTracking()
+
+        If MountSizeProgressText IsNot Nothing Then
+            Dim est = If(_expectedMountSizeBytes > 0, FormatBytes(_expectedMountSizeBytes), "Unknown")
+            MountSizeProgressText.Text = "0%"
+            MountSizeProgressTextDetail.Text = $"0 / {est}"
+            MountSizeProgressText.Visibility = Visibility.Visible
+            MountSizeProgressTextDetail.Visibility = Visibility.Visible
+        End If
+    End Sub
+
+    Private Sub ShowOperationSummaryStatus(header As String, detail As String)
+        If MountSizeProgressText IsNot Nothing Then
+            MountSizeProgressText.Text = header
+            MountSizeProgressText.Visibility = Visibility.Visible
+        End If
+
+        If MountSizeProgressTextDetail IsNot Nothing Then
+            MountSizeProgressTextDetail.Text = detail
+            MountSizeProgressTextDetail.Visibility = Visibility.Visible
+        End If
+    End Sub
+
+    Private Async Sub ResetMountProgressUi()
+        ' Wait 1 second before hiding
+        Await Task.Delay(1000)  ' ⚠️ This delay may be too short
+
+        _expectedMountSizeBytes = 0
+
+        ' Reset and hide progress text blocks
+        If MountSizeProgressText IsNot Nothing Then
+            MountSizeProgressText.Text = " "
+            ' MountSizeProgressText.Visibility = Visibility.Collapsed  ' ❌ HIDDEN HERE
+        End If
+
+        If MountSizeProgressTextDetail IsNot Nothing Then
+            MountSizeProgressTextDetail.Text = ""
+            'MountSizeProgressTextDetail.Visibility = Visibility.Collapsed  ' ❌ HIDDEN HERE
+        End If
+    End Sub
+
+
+    ' Simplified: Monitor directory size changes
+    Private Async Function MonitorMountDirAsync(mountDir As String, ct As CancellationToken) As Task
+        While Not ct.IsCancellationRequested
+            If Not Directory.Exists(mountDir) Then
+                Exit While
+            End If
+
+            Try
+                ' Get current directory size
+                Dim currentSize = Await Task.Run(Function() GetDirectorySize(mountDir), ct)
+
+                ' Update UI with current size
+                Await Dispatcher.InvokeAsync(Sub() UpdateMountSizeProgress(currentSize))
+
+                ' Wait before next check
+                Await Task.Delay(500, ct)
+
+            Catch ex As OperationCanceledException
+                Exit While
+            Catch
+                ' Continue monitoring even if scan fails
+            End Try
+        End While
+    End Function
+    ' Simplified: Calculate directory size with CMD fallback
+    Private Function GetDirectorySize(root As String) As Long
+        If Not Directory.Exists(root) Then
+            Return 0
+        End If
+
+        Dim total As Long = 0
+        Dim enumerationFailed As Boolean = False
+
+        Try
+            For Each filePath In Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                Try
+                    total += New FileInfo(filePath).Length
+                Catch
+                    ' Skip inaccessible files
+                End Try
+            Next
+        Catch
+            ' If enumeration fails completely, mark for CMD fallback
+            enumerationFailed = True
+        End Try
+
+        ' Use CMD fallback if enumeration failed OR returned zero (likely inaccessible directory)
+        If enumerationFailed OrElse total = 0 Then
+            Dim cmdSize = GetDirectorySizeViaCmdLine(root)
+            If cmdSize > 0 Then
+                Debug.WriteLine($"CMD fallback succeeded: {FormatBytes(cmdSize)} for {root}")
+                Return cmdSize
+            End If
+        End If
+
+        Return total
+    End Function
+    ' CMD fallback: Use DIR command to calculate directory size
+    Private Function GetDirectorySizeViaCmdLine(root As String) As Long
+        If Not Directory.Exists(root) Then
+            Return 0
+        End If
+
+        Try
+            ' Build CMD command: dir /s "path" | find "File(s)"
+            Dim psi As New ProcessStartInfo With {
+            .FileName = "cmd.exe",
+            .Arguments = $"/c ""for /f ""usebackq tokens=3"" %a in (`dir /s ""{root}"" ^| find ""File(s)""`) do @echo %a""",
+            .UseShellExecute = False,
+            .RedirectStandardOutput = True,
+            .RedirectStandardError = True,
+            .CreateNoWindow = True,
+            .WorkingDirectory = root  ' ❌ This one uses 'root' as WorkingDirectory - DELETE THIS VERSION
+        }
+
+            Using p As Process = Process.Start(psi)
+                Dim output = p.StandardOutput.ReadToEnd()
+                p.WaitForExit()
+
+                If p.ExitCode = 0 AndAlso Not String.IsNullOrWhiteSpace(output) Then
+                    ' Parse last line (last "Total size: X bytes")
+                    Dim lines = output.Split({ControlChars.Cr, ControlChars.Lf}, StringSplitOptions.RemoveEmptyEntries)
+
+                    If lines.Length > 0 Then
+                        ' Get last valid size value (remove commas)
+                        Dim lastLine = lines(lines.Length - 1).Trim().Replace(",", "")
+
+                        Dim sizeValue As Long
+                        If Long.TryParse(lastLine, sizeValue) Then
+                            Return sizeValue
+                        End If
+                    End If
+                End If
+            End Using
+        Catch ex As Exception
+            ' Silent fail - return 0
+            Debug.WriteLine($"CMD fallback failed: {ex.Message}")
+        End Try
+
+        Return 0
+    End Function
+
+    ' OPTIMIZED: Update progress UI with debouncing
+    Private Sub UpdateMountSizeProgress(bytesCopied As Long)
+        ' No need for CheckAccess - caller ensures we're on UI thread
+        If MountSizeProgressText Is Nothing OrElse MountSizeProgressTextDetail Is Nothing Then
+            Return
+        End If
+
+        If _expectedMountSizeBytes <= 0 Then
+            ' Only update if changed significantly (>1MB difference)
+            If Math.Abs(bytesCopied - _lastReportedBytes) > 1048576 Then
+                MountSizeProgressTextDetail.Text = $"{FormatBytes(bytesCopied)} / Unknown"
+                _lastReportedBytes = bytesCopied
+            End If
+            Return
+        End If
+
+        Dim pct = CInt(Math.Min(100.0, (bytesCopied * 100.0) / _expectedMountSizeBytes))
+
+        ' Debounce: Only update if percentage changed or bytes changed significantly
+        If pct <> _lastReportedPercentage OrElse
+           Math.Abs(bytesCopied - _lastReportedBytes) > (_expectedMountSizeBytes \ 100) Then
+
+            MountSizeProgressText.Text = $"{pct}%"
+            MountSizeProgressTextDetail.Text = $"{FormatBytes(bytesCopied)} / {FormatBytes(_expectedMountSizeBytes)}"
+
+            _lastReportedPercentage = pct
+            _lastReportedBytes = bytesCopied
+        End If
+    End Sub
+
+    Private Function FormatBytes(value As Long) As String
+        Dim units = {"B", "KB", "MB", "GB", "TB"}
+        Dim dbl = CDbl(value)
+        Dim idx = 0
+        While dbl >= 1024 AndAlso idx < units.Length - 1
+            dbl /= 1024
+            idx += 1
+        End While
+        Return $"{dbl:0.##} {units(idx)}"
+    End Function
+
+    Private Function GetBootVolumeLabelForCurrentBuild() As String
+        Dim arch = _labPeManifest?.Architecture
+        If String.IsNullOrWhiteSpace(arch) Then
+            Return WinPeBootVolumeLabel
+        End If
+
+        Select Case arch.Trim().ToLowerInvariant()
+            Case "x64", "amd64"
+                Return "WinPE_AMD64"
+            Case "arm64"
+                Return "WinPE_ARM64"
+            Case Else
+                Return WinPeBootVolumeLabel
+        End Select
+    End Function
+
+    Private Function CalculateBootPartitionSizeBytes(totalBytes As Long) As Long
+        Dim cappedDefault = Math.Min(DefaultBootPartitionBytes, MaxFat32PartitionBytes)
+        Dim bootBytes = cappedDefault
+        If totalBytes - bootBytes < MinDataPartitionBytes Then
+            bootBytes = Math.Max(MinBootPartitionBytes, totalBytes - MinDataPartitionBytes)
+        End If
+        If bootBytes > MaxFat32PartitionBytes Then
+            bootBytes = MaxFat32PartitionBytes
+        End If
+        If bootBytes <= 0 OrElse totalBytes - bootBytes <= 0 Then
+            Return 0
+        End If
+        Return bootBytes
+    End Function
+
+    Private Function IsDriveLetterAvailable(letter As Char) As Boolean
+        Dim upper = Char.ToUpperInvariant(letter)
+        Return Not DriveInfo.GetDrives().Any(Function(di) Char.ToUpperInvariant(di.Name(0)) = upper)
+    End Function
+
+    Private Function EnsureWinPeDriveLettersAvailable() As Boolean
+        Dim conflicts As New List(Of Char)()
+        If Not IsDriveLetterAvailable(WinPeBootDriveLetter) Then
+            conflicts.Add(WinPeBootDriveLetter)
+        End If
+        If Not IsDriveLetterAvailable(WinPeDataDriveLetter) Then
+            conflicts.Add(WinPeDataDriveLetter)
+        End If
+
+        If conflicts.Count = 0 Then
+            Return True
+        End If
+
+        Dim letters = String.Join(", ", conflicts.Select(Function(c) $"{Char.ToUpperInvariant(c)}:"))
+        MessageBox.Show($"Drive letter(s) {letters} are currently in use. Please free them before preparing WinPE media.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Warning)
+        Return False
+    End Function
+
+    Private Function TruncatePathForStatus(path As String, maxLength As Integer) As String
+        If String.IsNullOrEmpty(path) OrElse path.Length <= maxLength Then
+            Return path
+        End If
+        Dim suffixLength = Math.Max(1, maxLength - 3)
+        Return "..." & path.Substring(path.Length - suffixLength)
+    End Function
+
+    Private Async Function UnmountImageAsync() As Task
+        If Not _isMounted Then
+            MessageBox.Show("No image is currently mounted.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+        Dim mountPath As String = Nothing
+        If Not EnsureMountDirectory(mountPath) Then
+            Return
+        End If
+
+        Dim prompt = "Do you want to save changes before unmounting this image?"
+        Dim choice = MessageBox.Show(prompt, "Save changes to image", MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Yes)
+        If choice = MessageBoxResult.Cancel Then Return
+
+        ' Get initial size before unmount
+        Dim initialSize As Long = 0
+        Try
+            initialSize = Await Task.Run(Function() GetDirectorySize(mountPath))
+        Catch
+            ' Continue even if we can't get initial size
+        End Try
+
+        _expectedMountSizeBytes = initialSize
+        PrepareUnmountProgressUi(initialSize)
+
+        Dim commitSwitch As String = If(choice = MessageBoxResult.Yes, "/Commit", "/Discard")
+        Dim unmountArgs = $"/Unmount-WIM /MountDir:""" & mountPath & """ " & commitSwitch
+
+        ' Start real-time folder monitoring on separate thread (countdown to zero)
+        _mountMonitorCts = New CancellationTokenSource()
+        Dim monitorTask = MonitorUnmountDirAsync(mountPath, _mountMonitorCts.Token)
+
+        Dim result = Await RunDismSimpleAsync(unmountArgs)
+
+        ' Stop monitoring
+        _mountMonitorCts.Cancel()
+        Try
+            Await Task.WhenAny(monitorTask, Task.Delay(2000)) ' Wait up to 2 seconds for monitor to finish
+        Catch
+            ' Ignore cancellation exceptions
+        End Try
+
+        If result.ExitCode = 0 Then
+            _isMounted = False
+            UpdateWindowTitle()
+            UpdateMountUi()
+
+            ' ✅ NEW: Hide log readout after successful unmount
+            HideLogReadOut()
+
+            ' Show success notification in progress panel
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Text = "100%"
+                MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
+            End If
+
+            ' Wait 3 seconds to show success, then reset
+            Await Task.Delay(3000)
+
+            ' Reset text color before hiding
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Foreground = New SolidColorBrush(Color.FromRgb(&HCC, &HCC, &HCC))
+            End If
+
+            ResetMountProgressUi()
+
+            Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
+        End If
+
+        ResetMountProgressUi()
+
+        ' Update MountDir state after unmount operation
+        UpdateMountDirState()
+    End Function
+
+    ' Prepare UI for unmount progress (countdown)
+    Private Sub PrepareUnmountProgressUi(initialSize As Long)
+        ResetProgressTracking()
+
+        If MountSizeProgressText IsNot Nothing Then
+            Dim sizeStr = If(initialSize > 0, FormatBytes(initialSize), "Unknown")
+            MountSizeProgressTextDetail.Text = $"{sizeStr} / {sizeStr}"
+            MountSizeProgressText.Text = "0%"
+            MountSizeProgressText.Visibility = Visibility.Visible
+            MountSizeProgressTextDetail.Visibility = Visibility.Visible
+        End If
+    End Sub
+
+    ' Minimal unmount monitoring (fixed interval, no adaptive/stall logic)
+    Private Async Function MonitorUnmountDirAsync(mountDir As String, ct As CancellationToken) As Task
+        Dim baselineSet As Boolean = False
+
+        While Not ct.IsCancellationRequested
+            Dim currentSize As Long = 0
+            If Directory.Exists(mountDir) Then
+                Try
+                    currentSize = Await Task.Run(Function() GetDirectorySize(mountDir), ct)
+                Catch ex As OperationCanceledException
+                    Exit While
+                Catch
+                    ' Ignore errors, treat as partial size
+                End Try
+            End If
+
+            ' Establish baseline once if missing
+            If Not baselineSet AndAlso _expectedMountSizeBytes <= 0 AndAlso currentSize > 0 Then
+                _expectedMountSizeBytes = currentSize
+                baselineSet = True
+                Await Dispatcher.InvokeAsync(Sub()
+                                                 If MountSizeProgressText IsNot Nothing Then
+                                                     MountSizeProgressText.Text = "0%"
+                                                 End If
+                                                 If MountSizeProgressTextDetail IsNot Nothing Then
+                                                     Dim sizeStr = FormatBytes(currentSize)
+                                                     MountSizeProgressTextDetail.Text = $"{sizeStr} / {sizeStr}"
+                                                 End If
+                                             End Sub, DispatcherPriority.Background)
+            End If
+
+            Await Dispatcher.InvokeAsync(Sub() UpdateUnmountSizeProgress(currentSize), DispatcherPriority.Background)
+
+            Try
+                Await Task.Delay(500, ct) ' Fixed 500ms poll
+            Catch ex As OperationCanceledException
+                Exit While
+            End Try
+        End While
+
+        ' Final update after cancellation or completion
+        Dim finalSize As Long = 0
+        If Directory.Exists(mountDir) Then
+            Try
+                finalSize = Await Task.Run(Function() GetDirectorySize(mountDir))
+            Catch
+                finalSize = 0
+            End Try
+        End If
+        Await Dispatcher.InvokeAsync(Sub() UpdateUnmountSizeProgress(finalSize), DispatcherPriority.Background)
+    End Function
+
+    ' OPTIMIZED: Update unmount progress UI (countdown from initial to zero)
+    Private Sub UpdateUnmountSizeProgress(currentBytes As Long)
+        ' No need for CheckAccess - caller ensures we're on UI thread
+        If MountSizeProgressText Is Nothing OrElse MountSizeProgressTextDetail Is Nothing Then
+            Return
+        End If
+
+        ' If we don't have an initial size snapshot, we cannot show accurate progress
+        ' This should never happen if PrepareUnmountProgressUi was called correctly
+        If _expectedMountSizeBytes <= 0 Then
+            ' Fallback: Use current size as baseline if we somehow missed the initial snapshot
+            ' This ensures we always have SOME reference point
+            If currentBytes > 0 AndAlso _expectedMountSizeBytes = 0 Then
+                _expectedMountSizeBytes = currentBytes
+                ' Update UI to show initial state
+                If MountSizeProgressText IsNot Nothing Then
+                    MountSizeProgressText.Text = "Processing..."
+                End If
+                If MountSizeProgressTextDetail IsNot Nothing Then
+                    Dim sizeStr = FormatBytes(currentBytes)
+                    MountSizeProgressTextDetail.Text = $"{sizeStr} remaining"
+                End If
+                _lastReportedBytes = currentBytes
+                _lastReportedPercentage = 0
+            Else
+                ' Really can't determine progress - show processing status with current size
+                ' This may happen if unmount completes quickly or if monitoring is too slow
+                If Math.Abs(currentBytes - _lastReportedBytes) > 1048576 Then ' Update every 1MB change
+                    MountSizeProgressText.Text = "Processing..."
+                    MountSizeProgressTextDetail.Text = If(currentBytes > 0,
+                        $"{FormatBytes(currentBytes)} remaining",
+                        "Finalizing...")
+                    _lastReportedBytes = currentBytes
+                End If
+            End If
+            Return
+        End If
+
+        ' Calculate accurate percentage based on initial snapshot
+        ' Percentage represents how much has been REMOVED (0% = nothing removed, 100% = everything removed)
+        Dim bytesRemoved = _expectedMountSizeBytes - currentBytes
+        Dim pct = CInt(Math.Min(100.0, Math.Max(0.0, (bytesRemoved * 100.0) / _expectedMountSizeBytes)))
+
+        ' Debounce updates - only update if percentage changed OR significant byte change
+        If pct <> _lastReportedPercentage OrElse
+           Math.Abs(currentBytes - _lastReportedBytes) > (_expectedMountSizeBytes \ 100) Then
+
+            ' Update percentage display with a percent suffix for clarity
+            MountSizeProgressText.Text = $"{pct}%"
+
+            ' Update detailed progress: "Current Size / Initial Snapshot Size"
+            ' This shows: remaining bytes / original bytes (e.g., "1.2 GB / 3.5 GB")
+            MountSizeProgressTextDetail.Text = $"{FormatBytes(currentBytes)} / {FormatBytes(_expectedMountSizeBytes)}"
+
+            ' Store last reported values for debouncing
+            _lastReportedPercentage = pct
+            _lastReportedBytes = currentBytes
+        End If
+    End Sub
+
+    Private Function IsDirectoryEmpty(path As String) As Boolean
+        If String.IsNullOrWhiteSpace(path) OrElse Not Directory.Exists(path) Then Return True
+        Try
+            Return Not Directory.EnumerateFileSystemEntries(path).Any()
+        Catch
+            Return True
+        End Try
+    End Function
+
+    Private Async Sub UnmountActionButton_Click(sender As Object, e As RoutedEventArgs)
+        ' Disable all action buttons immediately
+        DisableActionButtons()
+
+        Try
+            Await UnmountImageAsync()
+        Finally
+            ' Re-enable buttons after operation completes
+            EnableActionButtons()
+            UpdateActionButtonsState()
+        End Try
+    End Sub
+
+    Private Sub UpdateMountUi()
+        UpdateActionButtonsState()
+        UpdateMountDirState()
+        UpdateOpenMountFolderButtonState() ' ✅ This updates the Open Mount Folder button
+    End Sub
+
+    Private Sub EnsureDefaultWimSelection()
+        If _isMounted OrElse _operationInProgress Then
+            Return
+        End If
+
+        If String.IsNullOrEmpty(_wimPath) Then
+            Return
+        End If
+
+        If WimImagesListBox Is Nothing OrElse WimImagesListBox.Items.Count = 0 Then
+            Return
+        End If
+
+        If WimImagesListBox.SelectedItems.Count > 0 Then
+            Return
+        End If
+
+        Dim mountPath = GetConfiguredMountDirectory()
+        Dim mountDirReady = String.IsNullOrWhiteSpace(mountPath) OrElse Not Directory.Exists(mountPath) OrElse IsDirectoryEmpty(mountPath)
+
+        If mountDirReady Then
+            WimImagesListBox.SelectedIndex = 0
+        End If
+    End Sub
+
+    Private Sub RestoreMountButtonState()
+        EnsureDefaultWimSelection()
+        UpdateMountUi()
+    End Sub
+
+    Private Sub UpdateWindowTitle()
+        ' Update only the TitleLabel in the UI (standalone, no window title reference)
+        If TitleLabel IsNot Nothing Then
+            If String.IsNullOrEmpty(_wimPath) Then
+                TitleLabel.Text = ""  ' ✅ Changed from .Content to .Text
+            Else
+                Dim state = If(_isMounted, "Mounted", "Selected")
+                TitleLabel.Text = $"WIM File ({state}): {_wimPath}"  ' ✅ Changed from .Content to .Text
+            End If
+        End If
+    End Sub
+
+    ' This should be called in UpdateActionButtonsState
+    Private Sub UpdateOpenMountFolderButtonState()
+        If OpenMountFolderButton IsNot Nothing Then
+            ' Show button when mounted and directory is not empty
+            Dim mountPath = GetConfiguredMountDirectory()
+            Dim shouldShow = _isMounted AndAlso
+                     Not String.IsNullOrWhiteSpace(mountPath) AndAlso
+                     Directory.Exists(mountPath) AndAlso
+                     Not IsDirectoryEmpty(mountPath)
+
+            OpenMountFolderButton.Visibility = If(shouldShow, Visibility.Visible, Visibility.Collapsed)
+            OpenMountFolderButton.IsEnabled = shouldShow ' ✅ If visible, it's always enabled
+        End If
+    End Sub
+
+    Private Async Function RunDismSimpleAsync(arguments As String) As Task(Of (ExitCode As Integer, StdOut As String, StdErr As String))
+        Await _dismOpLock.WaitAsync()
+        EnterProcessBusyState()
+        Try
+            Dim psi As New ProcessStartInfo("dism.exe", arguments) With {
+                .UseShellExecute = False,
+                .RedirectStandardOutput = True,
+                .RedirectStandardError = True,
+                .CreateNoWindow = True
+            }
+            StartDismIndicator()
+            Using p As Process = Process.Start(psi)
+                Try
+                    ' Raise DISM to high priority so critical servicing work is less likely to be pre-empted
+                    p.PriorityClass = ProcessPriorityClass.High
+                Catch ex As Exception
+                    Debug.WriteLine("Failed to elevate DISM priority: " & ex.Message)
+                End Try
+                Dim stdOutTask = p.StandardOutput.ReadToEndAsync()
+                Dim stdErrTask = p.StandardError.ReadToEndAsync()
+                Await p.WaitForExitAsync()
+                Dim result = (p.ExitCode, Await stdOutTask, Await stdErrTask)
+                StopDismIndicator()
+                Return result
+            End Using
+        Catch ex As Exception
+            StopDismIndicator()
+            Return (-1, "", "Exception: " & ex.Message)
+        Finally
+            ExitProcessBusyState()
+            _dismOpLock.Release()
+        End Try
+    End Function
+
+    Private Async Function RunCommandAsync(fileName As String, arguments As String, Optional workingDirectory As String = Nothing) As Task(Of (ExitCode As Integer, StdOut As String, StdErr As String))
+        EnterProcessBusyState()
+        Try
+            Dim psi As New ProcessStartInfo With {
+                .FileName = fileName,
+                .Arguments = arguments,
+                .UseShellExecute = False,
+                .RedirectStandardOutput = True,
+                .RedirectStandardError = True,
+                .CreateNoWindow = True
+            }
+
+            If Not String.IsNullOrWhiteSpace(workingDirectory) AndAlso Directory.Exists(workingDirectory) Then
+                psi.WorkingDirectory = workingDirectory
+            End If
+
+            Using proc As Process = Process.Start(psi)
+                If proc Is Nothing Then
+                    Return (-1, String.Empty, $"Failed to start process '{fileName}'.")
+                End If
+
+                Dim stdOutTask = proc.StandardOutput.ReadToEndAsync()
+                Dim stdErrTask = proc.StandardError.ReadToEndAsync()
+                Await proc.WaitForExitAsync()
+                Return (proc.ExitCode, Await stdOutTask, Await stdErrTask)
+            End Using
+        Catch ex As Exception
+            Return (-1, String.Empty, ex.Message)
+        Finally
+            ExitProcessBusyState()
+        End Try
+    End Function
+
+    Private Shared Function MapToCopypeArchitecture(architecture As String) As String
+        If String.IsNullOrWhiteSpace(architecture) Then
+            Return Nothing
+        End If
+
+        Select Case architecture.Trim().ToLowerInvariant()
+            Case "x64", "amd64"
+                Return "amd64"
+            Case "arm64"
+                Return "arm64"
+            Case Else
+                Return Nothing
+        End Select
+    End Function
+
+    Private Function LocateCopypeScript() As String
+        Dim candidates As New List(Of String)()
+        Dim programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)
+        If Not String.IsNullOrEmpty(programFilesX86) Then
+            Dim kitPath = Path.Combine(programFilesX86, "Windows Kits")
+            If Directory.Exists(kitPath) Then
+                candidates.Add(kitPath)
+            End If
+        End If
+
+        Dim programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)
+        If Not String.IsNullOrEmpty(programFiles) Then
+            Dim kitPath = Path.Combine(programFiles, "Windows Kits")
+            If Directory.Exists(kitPath) Then
+                candidates.Add(kitPath)
+            End If
+        End If
+
+        For Each root In candidates
+            Try
+                Dim match = Directory.EnumerateFiles(root, "copype.cmd", SearchOption.AllDirectories).FirstOrDefault()
+                If Not String.IsNullOrEmpty(match) Then
+                    Return match
+                End If
+            Catch ex As Exception
+                Debug.WriteLine("copype search failed: " & ex.Message)
+            End Try
+        Next
+
+        Return Nothing
+    End Function
+
+    Private Function LocateDandISetEnv(copypeScriptPath As String) As String
+        If String.IsNullOrWhiteSpace(copypeScriptPath) Then
+            Return Nothing
+        End If
+
+        Try
+            Dim copypeDir = Path.GetDirectoryName(copypeScriptPath)
+            If String.IsNullOrEmpty(copypeDir) Then
+                Return Nothing
+            End If
+
+            Dim adkRoot = Path.GetDirectoryName(copypeDir)
+            If String.IsNullOrEmpty(adkRoot) Then
+                Return Nothing
+            End If
+
+            Dim dandISetEnvPath = Path.Combine(adkRoot, "Deployment Tools", "DandISetEnv.bat")
+            If File.Exists(dandISetEnvPath) Then
+                Return dandISetEnvPath
+            End If
+        Catch
+        End Try
+
+        Return Nothing
+    End Function
+
+    Private Async Function ResetWinPeRootAsync() As Task(Of Boolean)
+        Return Await Task.Run(Function()
+                                  Try
+                                      If Directory.Exists(WinPeRootDirectory) Then
+                                          Directory.Delete(WinPeRootDirectory, True)
+                                      End If
+                                      Directory.CreateDirectory(AppStorageRoot)
+                                      Dim winPeParent = Path.GetDirectoryName(WinPeRootDirectory)
+                                      If Not String.IsNullOrEmpty(winPeParent) Then
+                                          Directory.CreateDirectory(winPeParent)
+                                      End If
+                                      Return True
+                                  Catch ex As Exception
+                                      Debug.WriteLine("Failed to reset WinPE workspace: " & ex.Message)
+                                      Return False
+                                  End Try
+                              End Function)
+    End Function
+
+    Private Function IsCopypeArchitectureAvailable(copypeScriptPath As String, archToken As String) As Boolean
+        If String.IsNullOrWhiteSpace(copypeScriptPath) OrElse String.IsNullOrWhiteSpace(archToken) Then
+            Return False
+        End If
+
+        Dim baseDir = Path.GetDirectoryName(copypeScriptPath)
+        If String.IsNullOrEmpty(baseDir) Then
+            Return False
+        End If
+
+        Dim archRoot = Path.Combine(baseDir, archToken)
+        Return Directory.Exists(archRoot)
+    End Function
+
+    Private Function GetOptionalComponentsDirectory(copypeScriptPath As String, archToken As String) As String
+        If String.IsNullOrWhiteSpace(copypeScriptPath) OrElse String.IsNullOrWhiteSpace(archToken) Then
+            Return Nothing
+        End If
+
+        Dim baseDir = Path.GetDirectoryName(copypeScriptPath)
+        If String.IsNullOrEmpty(baseDir) Then
+            Return Nothing
+        End If
+
+        Return Path.Combine(baseDir, archToken, "WinPE_OCs")
+    End Function
+
+    Private Async Function AddOptionalComponentsToWinPeAsync(optionalComponentRoot As String, components As IEnumerable(Of String)) As Task(Of Boolean)
+        If components Is Nothing Then
+            Return True
+        End If
+
+        For Each component In components
+            Dim trimmedName = component?.Trim()
+            If String.IsNullOrEmpty(trimmedName) Then
+                Continue For
+            End If
+
+            Dim packagePath = Path.Combine(optionalComponentRoot, trimmedName & ".cab")
+            If Not File.Exists(packagePath) Then
+                MessageBox.Show($"Optional component '{trimmedName}' was not found at:{Environment.NewLine}{packagePath}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                Return False
+            End If
+
+            Dim addResult = Await RunDismSimpleAsync($"/Image:""{WinPeMountDirectory}"" /Add-Package /PackagePath:""" & packagePath & """")
+            If addResult.ExitCode <> 0 Then
+                MessageBox.Show($"Failed to add {trimmedName}:{Environment.NewLine}{addResult.StdErr}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                Return False
+            End If
+
+            Dim satelliteCab = Path.Combine(optionalComponentRoot, "en-us", trimmedName & ".cab")
+            If File.Exists(satelliteCab) Then
+                Await RunDismSimpleAsync($"/Image:""{WinPeMountDirectory}"" /Add-Package /PackagePath:""" & satelliteCab & """")
+            End If
+        Next
+
+        Return True
+    End Function
+
+    Private Sub WimImagesListBox_SelectionChanged(sender As Object, e As SelectionChangedEventArgs)
+        If _winPeState <> WinPeWizardState.Idle Then
+            Return
+        End If
+        UpdateActionButtonsState()
+    End Sub
+
+    Private Sub UpdateActionButtonsState()
+        UpdateFastOperationIndicators()
+
+        ' Define whether we should show mounted-state buttons regardless of operation status
+        Dim showMountedButtons = _isMounted
+
+        Dim mountPath = GetConfiguredMountDirectory()
+        Dim mountDirReady = String.IsNullOrWhiteSpace(mountPath) OrElse Not Directory.Exists(mountPath) OrElse IsDirectoryEmpty(mountPath)
+
+        Dim selCount = WimImagesListBox.SelectedItems.Count
+        Dim singleSelected = selCount = 1
+        Dim hasWimPath = Not String.IsNullOrEmpty(_wimPath)
+
+        ' ✅ Mount button: Show and enable when items selected, not mounted, and WIM loaded
+        If MountActionButton IsNot Nothing Then
+            Dim shouldShow = (selCount > 0 OrElse mountDirReady) AndAlso Not _isMounted AndAlso hasWimPath
+            MountActionButton.Visibility = If(shouldShow, Visibility.Visible, Visibility.Collapsed)
+            MountActionButton.IsEnabled = selCount > 0 AndAlso Not _isMounted AndAlso hasWimPath
+        End If
+
+        ' ✅ Export Image button: Show when selected OR mounted, always enabled when visible
+        If ExportImageButton IsNot Nothing Then
+            Dim shouldShow = ((selCount > 0 AndAlso singleSelected) OrElse showMountedButtons) AndAlso hasWimPath
+            ExportImageButton.Visibility = If(shouldShow, Visibility.Visible, Visibility.Collapsed)
+            ExportImageButton.IsEnabled = True ' ✅ Always enabled when visible
+        End If
+
+        ' ✅ Export Drivers button: Show when selected OR mounted, always enabled when visible
+        If ExportDriversButton IsNot Nothing Then
+            Dim shouldShow = ((selCount > 0 AndAlso singleSelected) OrElse showMountedButtons) AndAlso hasWimPath
+            ExportDriversButton.Visibility = If(shouldShow, Visibility.Visible, Visibility.Collapsed)
+            ExportDriversButton.IsEnabled = True ' ✅ Always enabled when visible
+        End If
+
+        ' ✅ Add Drivers button: Show when selected OR mounted, always enabled when visible
+        If AddDriversButton IsNot Nothing Then
+            Dim shouldShow = ((selCount > 0 AndAlso singleSelected) OrElse showMountedButtons) AndAlso hasWimPath
+            AddDriversButton.Visibility = If(shouldShow, Visibility.Visible, Visibility.Collapsed)
+            AddDriversButton.IsEnabled = True ' ✅ Always enabled when visible
+        End If
+
+        ' ✅ Apply Updates button: Show when selected OR mounted, always enabled when visible
+        If ApplyUpdatesButton IsNot Nothing Then
+            Dim shouldShow = ((selCount > 0 AndAlso singleSelected) OrElse showMountedButtons) AndAlso hasWimPath
+            ApplyUpdatesButton.Visibility = If(shouldShow, Visibility.Visible, Visibility.Collapsed)
+            ApplyUpdatesButton.IsEnabled = True ' ✅ Always enabled when visible
+        End If
+
+        ' ✅ Unmount button: Show when mounted, always enabled when visible
+        If UnmountActionButton IsNot Nothing Then
+            ' Dim mountPath = GetConfiguredMountDirectory() ' Reuse the mount path already computed
+            Dim shouldShow = showMountedButtons AndAlso Not IsDirectoryEmpty(mountPath)
+            UnmountActionButton.Visibility = If(shouldShow, Visibility.Visible, Visibility.Collapsed)
+            UnmountActionButton.IsEnabled = True ' ✅ Always enabled when visible
+        End If
+
+        ' ✅ Open Mount Folder button: Always enabled when visible
+        UpdateOpenMountFolderButtonState()
+    End Sub
+
+    Private Sub UpdateFastOperationIndicators()
+        Dim lightning = ChrW(&H26A1)
+
+        If AddDriversButton IsNot Nothing Then
+            Dim fastPrefix = If(_isMounted, String.Empty, lightning & " ")
+            Dim currentText = "Add Drivers"
+            AddDriversButton.Content = fastPrefix & currentText
+        End If
+
+        If ApplyUpdatesButton IsNot Nothing Then
+            Dim fastPrefix = If(_isMounted, String.Empty, lightning & " ")
+            Dim currentText = "Apply Updates"
+            ApplyUpdatesButton.Content = fastPrefix & currentText
+        End If
+    End Sub
+
+    Private Async Sub ExportImageButton_Click(sender As Object, e As RoutedEventArgs)
+        If WimImagesListBox.SelectedItems.Count <> 1 Then
+            MessageBox.Show("Select exactly one index to export.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        DisableAllControls() ' ✅ Updated
+
+
+
+
+
+
+        Try
+            Await ExportSelectedImageAsync()
+        Finally
+            EnableAllControls() ' ✅ Updated
+        End Try
+    End Sub
+
+    Private Async Function ExportSelectedImageAsync() As Task
+        If Not IsAdministrator() Then
+            MessageBox.Show("Administrator privileges required.", "DISM", MessageBoxButton.OK, MessageBoxImage.Warning)
+            Return
+        End If
+
+        Dim idx As Integer
+        If Not TryGetSelectedIndex(idx) Then
+            MessageBox.Show("Could not parse selected index.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End If
+
+        ' Show Save File Dialog
+        Dim saveDialog As New SaveFileDialog() With {
+            .Filter = "WIM Images|*.wim",
+            .Title = "Export Image As",
+            .FileName = $"exported_index{idx}.wim",
+            .DefaultExt = "wim",
+            .AddExtension = True
+        }
+
+        If saveDialog.ShowDialog() <> True Then
+            Return ' User cancelled
+        End If
+
+        Dim destinationPath = saveDialog.FileName
+
+        ' Check if file already exists (SaveFileDialog should handle this, but double-check)
+        If File.Exists(destinationPath) Then
+            Dim overwrite = MessageBox.Show($"File already exists. Overwrite?{Environment.NewLine}{destinationPath}",
+                                   "Confirm Overwrite",
+                                   MessageBoxButton.YesNo,
+                                   MessageBoxImage.Question,
+                                   MessageBoxResult.No)
+            If overwrite = MessageBoxResult.No Then
+                Return
+            End If
+            Try
+                File.Delete(destinationPath)
+            Catch ex As Exception
+                MessageBox.Show($"Could not delete existing file:{Environment.NewLine}{ex.Message}",
+                              "Error",
+                              MessageBoxButton.OK,
+                              MessageBoxImage.Error)
+                Return
+            End Try
+        End If
+
+        ' Get expected size for progress monitoring
+        If Not _imageSizes.TryGetValue(idx, _expectedMountSizeBytes) Then
+            _expectedMountSizeBytes = 0
+        End If
+
+        PrepareExportProgressUi()
+
+        ' Start monitoring export progress
+        _mountMonitorCts = New CancellationTokenSource()
+        Dim monitorTask = MonitorExportProgressAsync(destinationPath, _mountMonitorCts.Token)
+
+        ' Run DISM export command
+        Dim args = String.Format("/Export-Image /SourceImageFile:""{0}"" /SourceIndex:{1} /DestinationImageFile:""{2}""", _wimPath, idx, destinationPath)
+        ShowMountDebugInfo(args)
+        Dim result = Await RunDismSimpleAsync(args)
+
+        ' Stop monitoring
+        _mountMonitorCts.Cancel()
+        Try
+            Await Task.WhenAny(monitorTask, Task.Delay(2000))
+        Catch
+            ' Ignore cancellation exceptions
+        End Try
+
+        If result.ExitCode = 0 Then
+            ' Show success notification
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Text = "100%"
+                MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
+                MountSizeProgressTextDetail.Text = "Export complete"
+            End If
+
+            ' Wait 3 seconds to show success
+            Await Task.Delay(3000)
+
+            ' Reset text color before hiding
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Foreground = New SolidColorBrush(Color.FromRgb(&HCC, &HCC, &HCC))
+            End If
+
+            ResetMountProgressUi()
+        Else
+            MessageBox.Show($"Export failed (code {result.ExitCode}):{Environment.NewLine}{result.StdErr}",
+                   "DISM",
+                   MessageBoxButton.OK,
+                   MessageBoxImage.Error)
+            ResetMountProgressUi()
+        End If
+    End Function
+
+    Private Sub PrepareExportProgressUi()
+        ResetProgressTracking()
+
+        If MountSizeProgressText IsNot Nothing Then
+            Dim est = If(_expectedMountSizeBytes > 0, FormatBytes(_expectedMountSizeBytes), "Unknown")
+            MountSizeProgressText.Text = "0%"
+            MountSizeProgressTextDetail.Text = $"0 / {est}"
+            MountSizeProgressText.Visibility = Visibility.Visible
+            MountSizeProgressTextDetail.Visibility = Visibility.Visible
+        End If
+    End Sub
+
+    ' OPTIMIZED: Monitor export progress with file size tracking
+    Private Async Function MonitorExportProgressAsync(exportFilePath As String, ct As CancellationToken) As Task
+        Dim lastSize As Long = 0
+        Dim unchangedCount As Integer = 0
+
+        While Not ct.IsCancellationRequested
+            Dim sz As Long = 0
+
+            If File.Exists(exportFilePath) Then
+                Try
+                    ' Direct file size access on thread pool
+                    sz = Await Task.Run(Function()
+                                            Try
+                                                Return New FileInfo(exportFilePath).Length
+                                            Catch
+                                                Return 0L
+                                            End Try
+                                        End Function, ct)
+                Catch ex As OperationCanceledException
+                    Exit While
+                Catch
+                    ' Continue monitoring even if file access fails
+                End Try
+            End If
+
+            ' Detect stalled export
+            If sz = lastSize AndAlso sz > 0 Then
+                unchangedCount += 1
+            Else
+                unchangedCount = 0
+                lastSize = sz
+            End If
+
+            ' Non-blocking UI update
+            Await Dispatcher.InvokeAsync(Sub() UpdateExportSizeProgress(sz),
+                                          DispatcherPriority.Background)
+
+            ' Adaptive delay
+            Dim delayMs = If(unchangedCount > 5, 2000, 500)
+
+            Try
+                Await Task.Delay(delayMs, ct)
+            Catch ex As OperationCanceledException
+                Exit While
+            End Try
+        End While
+
+        ' Final update
+        If Not ct.IsCancellationRequested AndAlso File.Exists(exportFilePath) Then
+            Dim finalSize = Await Task.Run(Function() New FileInfo(exportFilePath).Length)
+            Await Dispatcher.InvokeAsync(Sub() UpdateExportSizeProgress(finalSize))
+        End If
+    End Function
+
+    ' OPTIMIZED: Update export progress with debouncing
+    Private Sub UpdateExportSizeProgress(bytesCopied As Long)
+        ' No need for CheckAccess - caller ensures we're on UI thread
+        If MountSizeProgressText Is Nothing OrElse MountSizeProgressTextDetail Is Nothing Then
+            Return
+        End If
+
+        If _expectedMountSizeBytes <= 0 Then
+            ' Only update if changed significantly
+            If Math.Abs(bytesCopied - _lastReportedBytes) > 1048576 Then
+                MountSizeProgressTextDetail.Text = $"{FormatBytes(bytesCopied)} / Unknown"
+                _lastReportedBytes = bytesCopied
+            End If
+            Return
+        End If
+
+        Dim pct = CInt(Math.Min(100.0, (bytesCopied * 100.0) / _expectedMountSizeBytes))
+
+        ' Debounce updates
+        If pct <> _lastReportedPercentage OrElse
+   Math.Abs(bytesCopied - _lastReportedBytes) > (_expectedMountSizeBytes \ 100) Then
+
+            MountSizeProgressText.Text = $"{pct}%"
+            MountSizeProgressTextDetail.Text = $"{FormatBytes(bytesCopied)} / {FormatBytes(_expectedMountSizeBytes)}"
+
+            _lastReportedPercentage = pct
+            _lastReportedBytes = bytesCopied
+        End If
+    End Sub
+
+    ' ==================== ENHANCED: ADD DRIVERS FUNCTIONALITY WITH SELECTION UI ====================
+
+    ' Fields for driver/update selection
+    'Private _selectedDriverFiles As New List(Of String)()
+    'Private _selectedUpdateFiles As New List(Of String)()
+    'Private _driverSelectionMode As Boolean = False
+    'Private _updateSelectionMode As Boolean = False
+
+    Private Async Sub AddDriversButton_Click(sender As Object, e As RoutedEventArgs)
+        If WimImagesListBox.SelectedItems.Count <> 1 Then
+            MessageBox.Show("Select exactly one index to add drivers.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        DisableAllControls()
+
+        Try
+            Await AddDriversAsync()
+        Finally
+            EnableAllControls()
+            RestoreMountButtonState()
+        End Try
+    End Sub
+
+    Private Async Function AddDriversAsync() As Task
+        If Not IsAdministrator() Then
+            MessageBox.Show("Administrator privileges required.", "DISM", MessageBoxButton.OK, MessageBoxImage.Warning)
+            Return
+        End If
+
+        Dim idx As Integer
+        If Not TryGetSelectedIndex(idx) Then
+            MessageBox.Show("Could not parse selected index.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End If
+
+        ' Show folder dialog for driver source
+        Dim folderDialog As New SaveFileDialog() With {
+            .Title = "Select folder containing drivers (.inf files)",
+            .FileName = "SelectFolder",
+            .Filter = "Folder Selection|*.this.directory",
+            .CheckFileExists = False,
+            .CheckPathExists = True
+        }
+
+        If folderDialog.ShowDialog() <> True Then
+            Return
+        End If
+
+        Dim driverSourcePath = Path.GetDirectoryName(folderDialog.FileName)
+
+        If String.IsNullOrWhiteSpace(driverSourcePath) OrElse Not Directory.Exists(driverSourcePath) Then
+            MessageBox.Show("Invalid driver source path selected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End If
+
+        ' Scan for .inf files in folder and subfolders
+        Dim infFiles As String()
+        Try
+            infFiles = Await Task.Run(Function() Directory.GetFiles(driverSourcePath, "*.inf", SearchOption.AllDirectories))
+        Catch ex As Exception
+            MessageBox.Show($"Failed to scan for driver files:{Environment.NewLine}{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End Try
+
+        If infFiles.Length = 0 Then
+            MessageBox.Show("No .inf driver files found in the selected folder.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        ' Show selection UI and wait for user to select files
+        Dim selectedDrivers = Await ShowDriverSelectionUIAsync(infFiles)
+
+        If selectedDrivers Is Nothing OrElse selectedDrivers.Count = 0 Then
+            ' User cancelled or selected nothing
+            Return
+        End If
+
+        Dim driverCount = selectedDrivers.Count
+
+        ' Check if we need to mount the image
+        Dim hadExistingMount = _isMounted
+        Dim needsMount = Not hadExistingMount
+        Dim mountPath As String = Nothing
+        If Not EnsureMountDirectory(mountPath) Then
+            Return
+        End If
+
+        Dim driversAdded As Boolean = False
+        Try
+            DisableMountControls()
+
+            ' Mount image if not already mounted
+            If needsMount Then
+                If Not Await MountImageForOperationAsync(mountPath, idx, False) Then
+                    MessageBox.Show("Failed to mount image. Add drivers cancelled.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+                    UpdateMountDirState()
+                    Return
+                End If
+            End If
+
+            ' Add selected drivers
+            Await AddDriversToMountAsync(mountPath, selectedDrivers.ToArray())
+            driversAdded = True
+
+            ' Load and display log file while the image is still mounted
+            Await LoadAndDisplayLogFileAsync(mountPath)
+
+            ' Unmount if we mounted it
+            If needsMount Then
+                ShowOperationSummaryStatus("Drivers added", $"{driverCount} driver(s) applied. Committing and unmounting temporary mount...")
+                Await UnmountAfterOperationAsync(mountPath, True)
+            End If
+
+        Catch ex As Exception
+            MessageBox.Show($"Error during driver addition:{Environment.NewLine}{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
+            ResetMountProgressUi()
+        Finally
+            UpdateMountDirState()
+        End Try
+
+        If driversAdded AndAlso hadExistingMount AndAlso _isMounted Then
+            Await PromptMountedImageDismountAsync(mountPath)
+        End If
+    End Function
+
+    ' Show driver selection UI with Select All, Start, Cancel buttons
+    Private Async Function ShowDriverSelectionUIAsync(infFiles As String()) As Task(Of List(Of String))
+        Return Await Task.Run(Function()
+                                  Dim selectedFiles As List(Of String) = Nothing
+
+                                  Dispatcher.Invoke(Sub()
+                                                        ' Populate listbox with driver filenames
+                                                        Log_read_out.Items.Clear()
+
+                                                        For Each infFile In infFiles
+                                                            Dim fileName = Path.GetFileName(infFile)
+                                                            Dim item As New ListBoxItem With {
+                                                                .Content = fileName,
+                                                                .Tag = infFile
+                                                            }
+                                                            Log_read_out.Items.Add(item)
+                                                        Next
+
+                                                        ' Enable multiple selection
+                                                        Log_read_out.SelectionMode = SelectionMode.Multiple
+                                                        Log_read_out.Visibility = Visibility.Visible
+                                                        _driverSelectionMode = True
+
+                                                        ' Show Select All, Start, Cancel buttons
+                                                        ShowDriverSelectionControls(True)
+                                                    End Sub)
+
+                                  ' Wait for user to make selection
+                                  While _driverSelectionMode
+                                      Thread.Sleep(100)
+                                  End While
+
+                                  ' Return selected files
+                                  Dispatcher.Invoke(Sub()
+                                                        selectedFiles = New List(Of String)(_selectedDriverFiles)
+                                                        _selectedDriverFiles.Clear()
+
+                                                        ' Hide selection UI
+                                                        Log_read_out.Visibility = Visibility.Collapsed
+                                                        ShowDriverSelectionControls(False)
+                                                    End Sub)
+
+                                  Return selectedFiles
+                              End Function)
+    End Function
+
+    ' Show/hide driver selection control buttons
+    Private Sub ShowDriverSelectionControls(show As Boolean)
+        If show Then
+            If SelectAllDriversButton IsNot Nothing Then
+                SelectAllDriversButton.Visibility = Visibility.Visible
+                SelectAllDriversButton.IsEnabled = True
+            End If
+
+            If StartDriverProcessButton IsNot Nothing Then
+                StartDriverProcessButton.Visibility = Visibility.Visible
+                StartDriverProcessButton.IsEnabled = True
+            End If
+
+            If CancelDriverProcessButton IsNot Nothing Then
+                CancelDriverProcessButton.Visibility = Visibility.Visible
+                CancelDriverProcessButton.IsEnabled = True
+            End If
+        Else
+            If SelectAllDriversButton IsNot Nothing Then
+                SelectAllDriversButton.Visibility = Visibility.Collapsed
+            End If
+
+            If StartDriverProcessButton IsNot Nothing Then
+                StartDriverProcessButton.Visibility = Visibility.Collapsed
+            End If
+
+            If CancelDriverProcessButton IsNot Nothing Then
+                CancelDriverProcessButton.Visibility = Visibility.Collapsed
+            End If
+        End If
+    End Sub
+
+    ' Select All button click handler for drivers
+    Private Sub SelectAllDriversButton_Click(sender As Object, e As RoutedEventArgs)
+        If Log_read_out IsNot Nothing Then
+            Log_read_out.SelectAll()
+        End If
+    End Sub
+
+    ' Start driver process button click handler
+    Private Sub StartDriverProcessButton_Click(sender As Object, e As RoutedEventArgs)
+        If Log_read_out IsNot Nothing AndAlso Log_read_out.SelectedItems.Count > 0 Then
+            ' Collect selected files
+            _selectedDriverFiles.Clear()
+            For Each item As ListBoxItem In Log_read_out.SelectedItems
+                If item.Tag IsNot Nothing Then
+                    _selectedDriverFiles.Add(item.Tag.ToString())
+                End If
+            Next
+
+            ' Exit selection mode
+            _driverSelectionMode = False
+        Else
+            MessageBox.Show("Please select at least one driver file.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Information)
+        End If
+    End Sub
+
+    ' Cancel driver process button click handler
+    Private Sub CancelDriverProcessButton_Click(sender As Object, e As RoutedEventArgs)
+        _selectedDriverFiles.Clear()
+        _driverSelectionMode = False
+    End Sub
+
+    ' Add selected drivers to mounted image
+    Private Async Function AddDriversToMountAsync(mountPath As String, infFiles As String()) As Task
+        If infFiles Is Nothing OrElse infFiles.Length = 0 Then
+            Return
+        End If
+
+        Dim logPath = GetLogFilePath(mountPath)
+        Dim timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+
+        ' Write log header
+        WriteToLog(logPath, "")
+        WriteToLog(logPath, $"========== Add Drivers Operation - {timestamp} ==========")
+
+        Dim totalDrivers = infFiles.Length
+        Dim processedCount = 0
+
+        For Each infFile In infFiles
+            processedCount += 1
+            Dim driverName = Path.GetFileName(infFile)
+
+            ' Update progress UI
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Text = $"{processedCount}/{totalDrivers}"
+            End If
+
+            If MountSizeProgressTextDetail IsNot Nothing Then
+                MountSizeProgressTextDetail.Text = $"Adding: {driverName}"
+            End If
+
+            ' Make progress visible
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Visibility = Visibility.Visible
+            End If
+            If MountSizeProgressTextDetail IsNot Nothing Then
+                MountSizeProgressTextDetail.Visibility = Visibility.Visible
+            End If
+
+            ' Add driver using DISM
+            Dim args = $"/Image:""" & mountPath & """ /Add-Driver /Driver:""" & infFile & """ "
+            Dim result = Await RunDismSimpleAsync(args)
+
+            ' Log result
+            Dim status = If(result.ExitCode = 0, "SUCCESS", $"FAILED (Code: {result.ExitCode})")
+            Dim logEntry = $"[{timestamp}] DRIVER: {driverName} - {status}"
+            WriteToLog(logPath, logEntry)
+
+            ' Small delay to show each driver being processed
+            Await Task.Delay(100)
+        Next
+
+        WriteToLog(logPath, $"========== Total Drivers Processed: {totalDrivers} ==========")
+        WriteToLog(logPath, "")
+
+        ' Show completion
+        If MountSizeProgressText IsNot Nothing Then
+            MountSizeProgressText.Text = "Complete"
+            MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
+        End If
+
+        If MountSizeProgressTextDetail IsNot Nothing Then
+            MountSizeProgressTextDetail.Text = $"{totalDrivers} driver(s) processed"
+        End If
+
+        Await Task.Delay(3000)
+
+        ' Reset text color
+        If MountSizeProgressText IsNot Nothing Then
+            MountSizeProgressText.Foreground = New SolidColorBrush(Color.FromRgb(&HCC, &HCC, &HCC))
+        End If
+
+        ResetMountProgressUi()
+    End Function
+
+    ' Prompt user to decide how to handle an already-mounted image after operations
+    Private Async Function PromptMountedImageDismountAsync(mountPath As String) As Task
+        If String.IsNullOrWhiteSpace(mountPath) OrElse Not _isMounted Then
+            Return
+        End If
+
+        Dim message = "The image was already mounted before this operation." & Environment.NewLine &
+                      "Would you like to dismount it now?" & Environment.NewLine &
+                      "Yes = Commit & Dismount" & Environment.NewLine &
+                      "No = Discard & Dismount" & Environment.NewLine &
+                      "Cancel = Keep Mounted"
+
+        Dim choice = MessageBox.Show(message,
+                                     "Mounted Image",
+                                     MessageBoxButton.YesNoCancel,
+                                     MessageBoxImage.Question,
+                                     MessageBoxResult.Cancel)
+
+        Select Case choice
+            Case MessageBoxResult.Yes
+                Await UnmountAfterOperationAsync(mountPath, True)
+            Case MessageBoxResult.No
+                Await UnmountAfterOperationAsync(mountPath, False)
+            Case Else
+                ' Keep mounted so the user can review or manually unmount later
+                UpdateMountUi()
+        End Select
+    End Function
+
+    ' ==================== WINPE WORKFLOW ====================
+
+    Private Sub CreateWinPE_Click(sender As Object, e As RoutedEventArgs)
+        If _operationInProgress Then
+            MessageBox.Show("Finish the current operation before creating WinPE.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        If _winPeState <> WinPeWizardState.Idle Then
+            MessageBox.Show("WinPE creation wizard is already active.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        If _labPeManifest IsNot Nothing Then
+            Dim prompt = $"A WinPE image for {_labPeManifest.Architecture} already exists (generated {_labPeManifest.GeneratedOn}).{Environment.NewLine}Overwrite it?"
+            Dim result = MessageBox.Show(prompt, "Existing WinPE", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
+            If result <> MessageBoxResult.Yes Then
+                Return
+            End If
+        End If
+
+        EnterWinPeArchitectureSelection()
+    End Sub
+
+    Private Sub WinPENextButton_Click(sender As Object, e As RoutedEventArgs)
+        If _winPeState <> WinPeWizardState.SelectingArchitecture Then
+            Return
+        End If
+
+        Dim selectedItem = TryCast(WimImagesListBox.SelectedItem, ListBoxItem)
+        Dim architecture = TryCast(selectedItem?.Tag, String)
+        If String.IsNullOrWhiteSpace(architecture) Then
+            MessageBox.Show("Select an architecture to continue.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        _selectedWinPeArchitecture = architecture
+        _selectedOptionalComponents.Clear()
+
+        ShowOptionalComponentSelection()
+    End Sub
+
+    Private Async Sub WinPEFinishButton_Click(sender As Object, e As RoutedEventArgs)
+        If _winPeState <> WinPeWizardState.SelectingOptionalComponents Then
+            Return
+        End If
+
+        If String.IsNullOrWhiteSpace(_selectedWinPeArchitecture) Then
+            MessageBox.Show("Select an architecture before creating WinPE.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        WinPEFinishButton.IsEnabled = False
+        Try
+            Dim created = Await CreateWinPeImageAsync(_selectedWinPeArchitecture)
+            If created Then
+                MessageBox.Show($"WinPE {_selectedWinPeArchitecture.ToUpperInvariant()} image created at:{Environment.NewLine}{WinPeRootDirectory}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+                ExitWinPeWizard()
+                RefreshLabPeManifest()
+            End If
+        Catch ex As Exception
+            MessageBox.Show("Unable to create WinPE: " & ex.Message, "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+        Finally
+            WinPEFinishButton.IsEnabled = True
+        End Try
+    End Sub
+
+    Private Sub WinPECancelButton_Click(sender As Object, e As RoutedEventArgs)
+        If _winPeState = WinPeWizardState.Idle Then
+            Return
+        End If
+
+        ExitWinPeWizard()
+    End Sub
+
+    Private Sub EnterWinPeArchitectureSelection()
+        _winPeState = WinPeWizardState.SelectingArchitecture
+        BackupListState()
+        HideActionButtonsForWinPe()
+        ShowWinPeWizardButtons(showNext:=True, showFinish:=False)
+
+        If WimImagesListBox IsNot Nothing Then
+            WimImagesListBox.SelectionMode = SelectionMode.Single
+            WimImagesListBox.Items.Clear()
+            For Each arch In _winPeArchitectures
+                Dim item As New ListBoxItem With {
+                    .Content = $"Architecture: {arch.ToUpperInvariant()}",
+                    .Tag = arch
+                }
+                WimImagesListBox.Items.Add(item)
+            Next
+            WimImagesListBox.Visibility = Visibility.Visible
+        End If
+
+        If Log_read_out IsNot Nothing Then
+            Log_read_out.Items.Clear()
+            Log_read_out.Visibility = Visibility.Collapsed
+        End If
+    End Sub
+
+    Private Sub ShowOptionalComponentSelection()
+        _winPeState = WinPeWizardState.SelectingOptionalComponents
+        ShowWinPeWizardButtons(showNext:=False, showFinish:=True)
+
+        If WimImagesListBox IsNot Nothing Then
+            WimImagesListBox.SelectionMode = SelectionMode.Single
+            WimImagesListBox.Items.Clear()
+            Dim ocList As List(Of String) = Nothing
+            If Not _winPeOptionalComponents.TryGetValue(_selectedWinPeArchitecture, ocList) Then
+                ocList = _winPeOptionalComponents(_winPeArchitectures.First())
+            End If
+            For Each ocName In ocList
+                Dim item As New ListBoxItem With {
+                    .Content = ocName,
+                    .Tag = ocName
+                }
+                WimImagesListBox.Items.Add(item)
+            Next
+        End If
+
+        If Log_read_out IsNot Nothing Then
+            Log_read_out.Items.Clear()
+            Log_read_out.SelectionMode = SelectionMode.Multiple
+            Log_read_out.Visibility = Visibility.Visible
+        End If
+    End Sub
+
+    Private Sub ExitWinPeWizard()
+        _winPeState = WinPeWizardState.Idle
+        _selectedWinPeArchitecture = Nothing
+        _selectedOptionalComponents.Clear()
+        ShowWinPeWizardButtons(showNext:=False, showFinish:=False)
+        RestoreListState()
+        RestoreHiddenButtons()
+    End Sub
+
+    Private Sub ShowWinPeWizardButtons(showNext As Boolean, showFinish As Boolean)
+        If WinPENextButton IsNot Nothing Then
+            WinPENextButton.Visibility = If(showNext, Visibility.Visible, Visibility.Collapsed)
+        End If
+        If WinPEFinishButton IsNot Nothing Then
+            WinPEFinishButton.Visibility = If(showFinish, Visibility.Visible, Visibility.Collapsed)
+        End If
+        If WinPECancelButton IsNot Nothing Then
+            WinPECancelButton.Visibility = If(showNext OrElse showFinish, Visibility.Visible, Visibility.Collapsed)
+        End If
+    End Sub
+
+    Private Sub BackupListState()
+        If _wimListBackup Is Nothing AndAlso WimImagesListBox IsNot Nothing Then
+            _wimListBackup = WimImagesListBox.Items.Cast(Of Object)().ToList()
+        End If
+        If _logListBackup Is Nothing AndAlso Log_read_out IsNot Nothing Then
+            _logListBackup = Log_read_out.Items.Cast(Of Object)().ToList()
+        End If
+    End Sub
+
+    Private Sub RestoreListState()
+        If WimImagesListBox IsNot Nothing Then
+            If _wimListBackup IsNot Nothing Then
+                WimImagesListBox.Items.Clear()
+                For Each item In _wimListBackup
+                    WimImagesListBox.Items.Add(item)
+                Next
+                _wimListBackup = Nothing
+            End If
+
+            WimImagesListBox.SelectionMode = SelectionMode.Single
+            Dim hasWimItems = WimImagesListBox.Items.Count > 0
+            WimImagesListBox.Visibility = If(hasWimItems, Visibility.Visible, Visibility.Collapsed)
+        End If
+
+        If Log_read_out IsNot Nothing Then
+            If _logListBackup IsNot Nothing Then
+                Log_read_out.Items.Clear()
+                For Each item In _logListBackup
+                    Log_read_out.Items.Add(item)
+                Next
+                _logListBackup = Nothing
+            End If
+
+            Log_read_out.SelectionMode = SelectionMode.Single
+            Dim hasLogItems = Log_read_out.Items.Count > 0
+            Log_read_out.Visibility = If(hasLogItems, Visibility.Visible, Visibility.Collapsed)
+        End If
+    End Sub
+
+    Private Sub HideActionButtonsForWinPe()
+        If _hiddenButtonStates IsNot Nothing Then
+            Return
+        End If
+
+        Dim targets As UIElement() = {
+            MountActionButton, UnmountActionButton, ExportImageButton, ExportDriversButton,
+            AddDriversButton, ApplyUpdatesButton, OpenMountFolderButton, SelectAllDriversButton,
+            StartDriverProcessButton, CancelDriverProcessButton, SelectAllUpdatesButton,
+            StartUpdateProcessButton, CancelUpdateProcessButton, DeleteEntryButton,
+            _CreateWinPE, _CreateWinPE_Copy, ClearButton, CreateUsbButton
+        }
+
+        _hiddenButtonStates = New Dictionary(Of UIElement, Visibility)()
+        For Each element In targets
+            If element Is Nothing Then Continue For
+            _hiddenButtonStates(element) = element.Visibility
+            element.Visibility = Visibility.Collapsed
+        Next
+    End Sub
+
+    Private Sub RestoreHiddenButtons()
+        If _hiddenButtonStates Is Nothing Then
+            Return
+        End If
+
+        For Each kvp In _hiddenButtonStates
+            kvp.Key.Visibility = kvp.Value
+        Next
+
+        _hiddenButtonStates = Nothing
+        UpdateActionButtonsState()
+        UpdateWinPEUiState()
+    End Sub
+
+    Private Sub WimImagesListBox_MouseDoubleClick(sender As Object, e As MouseButtonEventArgs) Handles WimImagesListBox.MouseDoubleClick
+        If _winPeState <> WinPeWizardState.SelectingOptionalComponents Then
+            Return
+        End If
+
+        Dim selectedItem = TryCast(WimImagesListBox.SelectedItem, ListBoxItem)
+        Dim componentName = TryCast(selectedItem?.Tag, String)
+        If String.IsNullOrWhiteSpace(componentName) Then
+            componentName = TryCast(selectedItem?.Content, String)
+        End If
+
+        If String.IsNullOrWhiteSpace(componentName) Then
+            Return
+        End If
+
+        AddOptionalComponentSelection(componentName)
+    End Sub
+
+    Private Sub AddOptionalComponentSelection(componentName As String)
+        If _selectedOptionalComponents.Contains(componentName) Then
+            Return
+        End If
+
+        _selectedOptionalComponents.Add(componentName)
+        If Log_read_out IsNot Nothing Then
+            Log_read_out.Items.Add(componentName)
+        End If
+    End Sub
+
+    Private Sub UpdateWinPEStatus(message As String, Optional detail As String = "", Optional displayAsCreation As Boolean = False)
+        Dim updateAction As Action = Sub()
+                                         If MountSizeProgressText IsNot Nothing Then
+                                             If displayAsCreation Then
+                                                 MountSizeProgressText.Text = "Creating WinPE"
+                                             Else
+                                                 MountSizeProgressText.Text = If(String.IsNullOrWhiteSpace(message), " ", message)
+                                             End If
+                                             MountSizeProgressText.Visibility = Visibility.Visible
+                                         End If
+
+                                         If MountSizeProgressTextDetail IsNot Nothing Then
+                                             Dim detailText As String
+                                             If displayAsCreation Then
+                                                 Dim combined = message
+                                                 If Not String.IsNullOrWhiteSpace(detail) Then
+                                                     combined = If(String.IsNullOrWhiteSpace(combined), detail, combined & Environment.NewLine & detail)
+                                                 End If
+                                                 detailText = combined
+                                             Else
+                                                 detailText = detail
+                                             End If
+
+                                             MountSizeProgressTextDetail.Text = detailText
+                                             MountSizeProgressTextDetail.Visibility = If(String.IsNullOrWhiteSpace(detailText), Visibility.Collapsed, Visibility.Visible)
+                                         End If
+                                     End Sub
+
+        Dim dispatcherTarget = If(MountSizeProgressText IsNot Nothing, MountSizeProgressText.Dispatcher, Me.Dispatcher)
+        If dispatcherTarget Is Nothing Then
+            updateAction()
+            Return
+        End If
+
+        If dispatcherTarget.CheckAccess() Then
+            updateAction()
+        Else
+            dispatcherTarget.Invoke(updateAction)
+        End If
+    End Sub
+
+    Private Sub ClearWinPEStatus()
+        Dim clearAction As Action = Sub()
+                                        If MountSizeProgressText IsNot Nothing Then
+                                            MountSizeProgressText.Text = " "
+                                            MountSizeProgressText.Visibility = Visibility.Collapsed
+                                        End If
+                                        If MountSizeProgressTextDetail IsNot Nothing Then
+                                            MountSizeProgressTextDetail.Text = ""
+                                            MountSizeProgressTextDetail.Visibility = Visibility.Collapsed
+                                        End If
+                                    End Sub
+
+        Dim dispatcherTarget = If(MountSizeProgressText IsNot Nothing, MountSizeProgressText.Dispatcher, Me.Dispatcher)
+        If dispatcherTarget Is Nothing Then
+            clearAction()
+            Return
+        End If
+
+        If dispatcherTarget.CheckAccess() Then
+            clearAction()
+        Else
+            dispatcherTarget.Invoke(clearAction)
+        End If
+    End Sub
+
+    Private Sub DeleteEntryButton_Click(sender As Object, e As RoutedEventArgs)
+        If Log_read_out Is Nothing OrElse Log_read_out.SelectedItems.Count = 0 Then
+            Return
+        End If
+
+        Dim itemsToRemove = Log_read_out.SelectedItems.Cast(Of Object)().ToList()
+        For Each item In itemsToRemove
+            Log_read_out.Items.Remove(item)
+            Dim componentName = TryCast(item, String)
+            If componentName IsNot Nothing Then
+                _selectedOptionalComponents.Remove(componentName)
+            End If
+        Next
+    End Sub
+
+    Private Async Function CreateWinPeImageAsync(architecture As String) As Task(Of Boolean)
+        If String.IsNullOrWhiteSpace(architecture) Then
+            MessageBox.Show("Select an architecture before creating WinPE.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return False
+        End If
+
+        Dim archToken = MapToCopypeArchitecture(architecture)
+        If String.IsNullOrEmpty(archToken) Then
+            MessageBox.Show($"Unsupported WinPE architecture: {architecture}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return False
+        End If
+
+        Dim optionalComponents = _selectedOptionalComponents.ToList()
+        Dim controlsLocked As Boolean = False
+        Dim mountMounted As Boolean = False
+        Dim shouldCommit As Boolean = False
+        Dim operationSucceeded As Boolean = False
+        Dim operationFailed As Boolean = False
+        Dim pendingException As Exception = Nothing
+
+        Try
+            DisableAllControls()
+            controlsLocked = True
+            StopWinPeFolderWatcher()
+
+            Dim copypePath = Await Task.Run(Function() LocateCopypeScript())
+            If String.IsNullOrEmpty(copypePath) Then
+                UpdateWinPEStatus("copype.cmd was not found. Install the Windows ADK with the WinPE add-ons and try again.", displayAsCreation:=True)
+                MessageBox.Show("Unable to locate copype.cmd. Install the Windows ADK with the WinPE add-ons and try again.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                Return False
+            End If
+
+            UpdateWinPEStatus($"Resetting WinPE workspace ({architecture.ToUpperInvariant()})...", displayAsCreation:=True)
+
+            Dim workspaceReady = Await ResetWinPeRootAsync()
+            If Not workspaceReady Then
+                UpdateWinPEStatus("Unable to reset the WinPE workspace. Close any open files and try again.", displayAsCreation:=True)
+                MessageBox.Show("Unable to reset the WinPE workspace. Close any open files under the WinPE folder and try again.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                Return False
+            End If
+
+            UpdateWinPEStatus("Running copype to lay down base WinPE media...", displayAsCreation:=True)
+
+            Dim copypeDir = Path.GetDirectoryName(copypePath)
+            Dim copypeCommand = $"copype.cmd {archToken} ""{WinPeRootDirectory}"""
+            Dim dandISetEnvPath = LocateDandISetEnv(copypePath)
+            Dim chainedCommand = $"cd /d ""{copypeDir}"" && {copypeCommand}"
+            If Not String.IsNullOrEmpty(dandISetEnvPath) Then
+                chainedCommand = $"call ""{dandISetEnvPath}"" && {chainedCommand}"
+            End If
+            Dim copypeArgs = $"/V:ON /c ""{chainedCommand}"""  ' Initialize Deployment env (if present), cd into copype folder, then run copype with delayed expansion
+            Dim copypeResult As (ExitCode As Integer, StdOut As String, StdErr As String)
+            StartDismIndicator()
+            Try
+                copypeResult = Await RunCommandAsync("cmd.exe", copypeArgs)
+            Finally
+                StopDismIndicator()
+            End Try
+            If copypeResult.ExitCode <> 0 Then
+                UpdateWinPEStatus("copype failed. See the generated log for details.", displayAsCreation:=True)
+                Dim detailText = GetCopypeErrorDetails(copypeCommand, copypeResult)
+                MessageBox.Show(detailText, "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                Return False
+            End If
+
+            Dim bootWimPath = Path.Combine(WinPeRootDirectory, "media", "sources", "boot.wim")
+            If Not File.Exists(bootWimPath) Then
+                UpdateWinPEStatus("copype did not produce boot.wim. Verify your ADK installation.", displayAsCreation:=True)
+                MessageBox.Show("boot.wim was not created by copype.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                Return False
+            End If
+
+            Directory.CreateDirectory(WinPeMountDirectory)
+            Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
+
+            Try
+                Dim mountResult = Await RunDismSimpleAsync($"/Mount-Image /ImageFile:""{bootWimPath}"" /Index:1 /MountDir:""" & WinPeMountDirectory & """")
+                If mountResult.ExitCode <> 0 Then
+                    MessageBox.Show($"Failed to mount WinPE image:{Environment.NewLine}{mountResult.StdErr}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                    Return False
+                End If
+
+                mountMounted = True
+
+                If optionalComponents.Count > 0 Then
+                    Dim ocSummary = If(optionalComponents.Count <= 5,
+                                        String.Join(", ", optionalComponents),
+                                        String.Join(", ", optionalComponents.Take(5)) & $" (+{optionalComponents.Count - 5} more)")
+                    UpdateWinPEStatus("Adding optional WinPE components...", $"Components: {ocSummary}", displayAsCreation:=True)
+                    Dim ocRoot = GetOptionalComponentsDirectory(copypePath, archToken)
+                    If String.IsNullOrEmpty(ocRoot) OrElse Not Directory.Exists(ocRoot) Then
+                        UpdateWinPEStatus("Optional component folder missing.", $"Checked: {ocRoot}", displayAsCreation:=True)
+                        MessageBox.Show($"Optional component folder not found for {architecture}.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                        operationFailed = True
+                        Exit Try
+                    End If
+
+                    Dim added = Await AddOptionalComponentsToWinPeAsync(ocRoot, optionalComponents)
+                    If Not added Then
+                        UpdateWinPEStatus("Failed to add optional components.", "Review DISM output for failing package details.", displayAsCreation:=True)
+                        operationFailed = True
+                        Exit Try
+                    End If
+                End If
+
+                UpdateWinPEStatus("Finalizing WinPE image...", $"Committing changes to {WinPeRootDirectory}", displayAsCreation:=True)
+                shouldCommit = True
+                operationSucceeded = True
+            Catch ex As Exception
+                pendingException = ex
+            End Try
+
+            If mountMounted Then
+                Dim unmountSwitch = If(shouldCommit, "/Commit", "/Discard")
+                Dim unmountResult = Await RunDismSimpleAsync($"/Unmount-Image /MountDir:""{WinPeMountDirectory}"" {unmountSwitch}")
+                If unmountResult.ExitCode <> 0 Then
+                    MessageBox.Show($"Unmount failed:{Environment.NewLine}{unmountResult.StdErr}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Warning)
+                    shouldCommit = False
+                End If
+
+                Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
+            End If
+
+            If pendingException IsNot Nothing Then
+                Throw pendingException
+            End If
+
+            If Not shouldCommit OrElse Not operationSucceeded OrElse operationFailed Then
+                Return False
+            End If
+
+            Dim manifest As New LabPeManifestInfo With {
+                .Architecture = architecture,
+                .GeneratedOn = DateTime.UtcNow,
+                .OptionalComponents = New List(Of String)(optionalComponents)
+            }
+
+            PersistLabPeManifest(manifest)
+            UpdateWinPEStatus("WinPE image finalized.", $"Manifest updated at {ManifestFilePath}", displayAsCreation:=True)
+            _labPeManifest = manifest
+            UpdateWinPEUiState()
+
+            Return True
+        Finally
+            StartWinPeFolderWatcher()
+            If controlsLocked Then
+                EnableAllControls()
+            End If
+            ClearWinPEStatus()
+        End Try
+    End Function
+
+    ' ==================== ENHANCED: APPLY UPDATES FUNCTIONALITY WITH SELECTION UI ====================
+
+    Private Async Sub ApplyUpdatesButton_Click(sender As Object, e As RoutedEventArgs)
+        If WimImagesListBox.SelectedItems.Count <> 1 Then
+            MessageBox.Show("Select exactly one index to apply updates.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        DisableAllControls()
+
+        Try
+            Await ApplyUpdatesAsync()
+        Finally
+            EnableAllControls()
+            RestoreMountButtonState()
+        End Try
+    End Sub
+
+    Private Async Function ApplyUpdatesAsync() As Task
+        If Not IsAdministrator() Then
+            MessageBox.Show("Administrator privileges required.", "DISM", MessageBoxButton.OK, MessageBoxImage.Warning)
+            Return
+        End If
+
+        Dim idx As Integer
+        If Not TryGetSelectedIndex(idx) Then
+            MessageBox.Show("Could not parse selected index.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End If
+
+        ' Show folder dialog for updates source
+        Dim folderDialog As New SaveFileDialog() With {
+        .Title = "Select folder containing updates (.msu/.cab files)",
+        .FileName = "SelectFolder",
+        .Filter = "Folder Selection|*.this.directory",
+        .CheckFileExists = False,
+        .CheckPathExists = True
+    }
+
+        If folderDialog.ShowDialog() <> True Then
+            Return
+        End If
+
+        Dim updatesSourcePath = Path.GetDirectoryName(folderDialog.FileName)
+
+        If String.IsNullOrWhiteSpace(updatesSourcePath) OrElse Not Directory.Exists(updatesSourcePath) Then
+            MessageBox.Show("Invalid updates source path selected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End If
+
+        ' Scan for .msu and .cab files in folder and subfolders
+        Dim updateFiles As New List(Of String)
+
+        Try
+            Dim msuFiles = Await Task.Run(Function() Directory.GetFiles(updatesSourcePath, "*.msu", SearchOption.AllDirectories))
+            Dim cabFiles = Await Task.Run(Function() Directory.GetFiles(updatesSourcePath, "*.cab", SearchOption.AllDirectories))
+
+            updateFiles.AddRange(msuFiles)
+            updateFiles.AddRange(cabFiles)
+        Catch ex As Exception
+            MessageBox.Show($"Failed to scan for update files:{Environment.NewLine}{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End Try
+
+        If updateFiles.Count = 0 Then
+            MessageBox.Show("No .msu or .cab update files found in the selected folder.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        ' Show selection UI and wait for user to select files
+        Dim selectedUpdates = Await ShowUpdateSelectionUIAsync(updateFiles.ToArray())
+
+        If selectedUpdates Is Nothing OrElse selectedUpdates.Count = 0 Then
+            ' User cancelled or selected nothing
+            Return
+        End If
+
+        ' Check if we need to mount the image
+        Dim hadExistingMount = _isMounted
+        Dim needsMount = Not hadExistingMount
+        Dim mountPath As String = Nothing
+        If Not EnsureMountDirectory(mountPath) Then
+            Return
+        End If
+
+        Dim updatesApplied As Boolean = False
+        Try
+            DisableMountControls()
+
+            ' Mount image if not already mounted
+            If needsMount Then
+                If Not Await MountImageForOperationAsync(mountPath, idx, False) Then
+                    MessageBox.Show("Failed to mount image. Apply updates cancelled.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+                    UpdateMountDirState()
+                    Return
+                End If
+            End If
+
+            ' Apply selected updates
+            Await ApplyUpdatesToMountAsync(mountPath, selectedUpdates.ToArray())
+            updatesApplied = True
+
+            ' Load and display log file while the image is still mounted
+            Await LoadAndDisplayLogFileAsync(mountPath)
+
+            ' Unmount if we mounted it
+            If needsMount Then
+                Await UnmountAfterOperationAsync(mountPath, True)
+            End If
+
+        Catch ex As Exception
+            MessageBox.Show($"Error during update application:{Environment.NewLine}{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
+            ResetMountProgressUi()
+        Finally
+            UpdateMountDirState()
+        End Try
+
+        If updatesApplied AndAlso hadExistingMount AndAlso _isMounted Then
+            Await PromptMountedImageDismountAsync(mountPath)
+        End If
+    End Function
+
+    ' Show update selection UI with Select All, Start, Cancel buttons
+    Private Async Function ShowUpdateSelectionUIAsync(updateFiles As String()) As Task(Of List(Of String))
+        Return Await Task.Run(Function()
+                                  Dim selectedFiles As List(Of String) = Nothing
+
+                                  Dispatcher.Invoke(Sub()
+                                                        ' Populate listbox with update filenames
+                                                        Log_read_out.Items.Clear()
+
+                                                        For Each updateFile In updateFiles
+                                                            Dim fileName = Path.GetFileName(updateFile)
+                                                            Dim item As New ListBoxItem With {
+                                                                .Content = fileName,
+                                                                .Tag = updateFile
+                                                            }
+                                                            Log_read_out.Items.Add(item)
+                                                        Next
+
+                                                        ' Enable multiple selection
+                                                        Log_read_out.SelectionMode = SelectionMode.Multiple
+                                                        Log_read_out.Visibility = Visibility.Visible
+                                                        _updateSelectionMode = True
+
+                                                        ' Show Select All, Start, Cancel buttons
+                                                        ShowUpdateSelectionControls(True)
+                                                    End Sub)
+
+                                  ' Wait for user to make selection
+                                  While _updateSelectionMode
+                                      Thread.Sleep(100)
+                                  End While
+
+                                  ' Return selected files
+                                  Dispatcher.Invoke(Sub()
+                                                        selectedFiles = New List(Of String)(_selectedUpdateFiles)
+                                                        _selectedUpdateFiles.Clear()
+
+                                                        ' Hide selection UI
+                                                        Log_read_out.Visibility = Visibility.Collapsed
+                                                        ShowUpdateSelectionControls(False)
+                                                    End Sub)
+
+                                  Return selectedFiles
+                              End Function)
+    End Function
+
+    ' Show/hide update selection control buttons
+    Private Sub ShowUpdateSelectionControls(show As Boolean)
+        If show Then
+            If SelectAllUpdatesButton IsNot Nothing Then
+                SelectAllUpdatesButton.Visibility = Visibility.Visible
+                SelectAllUpdatesButton.IsEnabled = True
+            End If
+
+            If StartUpdateProcessButton IsNot Nothing Then
+                StartUpdateProcessButton.Visibility = Visibility.Visible
+                StartUpdateProcessButton.IsEnabled = True
+            End If
+
+            If CancelUpdateProcessButton IsNot Nothing Then
+                CancelUpdateProcessButton.Visibility = Visibility.Visible
+                CancelUpdateProcessButton.IsEnabled = True
+            End If
+        Else
+            If SelectAllUpdatesButton IsNot Nothing Then
+                SelectAllUpdatesButton.Visibility = Visibility.Collapsed
+            End If
+
+            If StartUpdateProcessButton IsNot Nothing Then
+                StartUpdateProcessButton.Visibility = Visibility.Collapsed
+            End If
+
+            If CancelUpdateProcessButton IsNot Nothing Then
+                CancelUpdateProcessButton.Visibility = Visibility.Collapsed
+            End If
+        End If
+    End Sub
+
+    ' Select All button click handler for updates
+    Private Sub SelectAllUpdatesButton_Click(sender As Object, e As RoutedEventArgs)
+        If Log_read_out IsNot Nothing Then
+            Log_read_out.SelectAll()
+        End If
+    End Sub
+
+    ' Start update process button click handler
+    Private Sub StartUpdateProcessButton_Click(sender As Object, e As RoutedEventArgs)
+        If Log_read_out IsNot Nothing AndAlso Log_read_out.SelectedItems.Count > 0 Then
+            ' Collect selected files
+            _selectedUpdateFiles.Clear()
+            For Each item As ListBoxItem In Log_read_out.SelectedItems
+                If item.Tag IsNot Nothing Then
+                    _selectedUpdateFiles.Add(item.Tag.ToString())
+                End If
+            Next
+
+            ' Exit selection mode
+            _updateSelectionMode = False
+        Else
+            MessageBox.Show("Please select at least one update file.", "No Selection", MessageBoxButton.OK, MessageBoxImage.Information)
+        End If
+    End Sub
+
+    ' Cancel update process button click handler
+    Private Sub CancelUpdateProcessButton_Click(sender As Object, e As RoutedEventArgs)
+        _selectedUpdateFiles.Clear()
+        _updateSelectionMode = False
+    End Sub
+
+    ' ==================== APPLY UPDATES TO MOUNT ====================
+
+    ' Apply selected updates to mounted image
+    Private Async Function ApplyUpdatesToMountAsync(mountPath As String, updateFiles As String()) As Task
+        If updateFiles Is Nothing OrElse updateFiles.Length = 0 Then
+            Return
+        End If
+
+        Dim logPath = GetLogFilePath(mountPath)
+        Dim timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+
+        ' Write log header
+        WriteToLog(logPath, "")
+        WriteToLog(logPath, $"========== Apply Updates Operation - {timestamp} ==========")
+
+        Dim totalUpdates = updateFiles.Length
+        Dim processedCount = 0
+
+        For Each updateFile In updateFiles
+            processedCount += 1
+            Dim updateName = Path.GetFileName(updateFile)
+
+            ' Update progress UI
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Text = $"{processedCount}/{totalUpdates}"
+            End If
+
+            If MountSizeProgressTextDetail IsNot Nothing Then
+                MountSizeProgressTextDetail.Text = $"Applying: {updateName}"
+            End If
+
+            ' Make progress visible
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Visibility = Visibility.Visible
+            End If
+            If MountSizeProgressTextDetail IsNot Nothing Then
+                MountSizeProgressTextDetail.Visibility = Visibility.Visible
+            End If
+
+            ' Apply update using DISM
+            Dim args = $"/Image:""" & mountPath & """ /Add-Package /PackagePath:""" & updateFile & """"
+            Dim result = Await RunDismSimpleAsync(args)
+
+            ' Log result
+            Dim status = If(result.ExitCode = 0, "SUCCESS", $"FAILED (Code: {result.ExitCode})")
+            Dim logEntry = $"[{timestamp}] UPDATE: {updateName} - {status}"
+            WriteToLog(logPath, logEntry)
+
+            ' Small delay to show each update being processed
+            Await Task.Delay(100)
+        Next
+
+        WriteToLog(logPath, $"========== Total Updates Processed: {totalUpdates} ==========")
+        WriteToLog(logPath, "")
+
+        ' Show completion
+        If MountSizeProgressText IsNot Nothing Then
+            MountSizeProgressText.Text = "Complete"
+            MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
+        End If
+
+        If MountSizeProgressTextDetail IsNot Nothing Then
+            MountSizeProgressTextDetail.Text = $"{totalUpdates} update(s) processed"
+        End If
+
+        Await Task.Delay(3000)
+
+        ' Reset text color
+        If MountSizeProgressText IsNot Nothing Then
+            MountSizeProgressText.Foreground = New SolidColorBrush(Color.FromRgb(&HCC, &HCC, &HCC))
+        End If
+
+        ResetMountProgressUi()
+    End Function
+
+    ' ==================== SUPPORT HELPERS ====================
+
+    Private Sub EnableDarkTitleBar()
+        Try
+            Dim hwnd = New WindowInteropHelper(Me).Handle
+            If hwnd = IntPtr.Zero Then Return
+
+            Dim useDark As Integer = 1
+            DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, useDark, Marshal.SizeOf(Of Integer)())
+        Catch ex As Exception
+            Debug.WriteLine("Failed to enable dark title bar: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Async Function CheckAndDismountMountedImagesAsync() As Task
+        Try
+            Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
+        Catch ex As Exception
+            Debug.WriteLine("Cleanup mountpoints failed: " & ex.Message)
+        Finally
+            UpdateMountDirState()
+        End Try
+    End Function
+
+    Private Sub DisableMountControls()
+        If SelectWimButton IsNot Nothing Then SelectWimButton.IsEnabled = False
+        If OpenMountFolderButton IsNot Nothing Then OpenMountFolderButton.IsEnabled = False
+    End Sub
+
+    Private Sub UpdateMountDirState()
+        Dim controlsLocked = _operationInProgress
+
+        If SelectWimButton IsNot Nothing Then
+            SelectWimButton.IsEnabled = Not controlsLocked
+        End If
+
+        UpdateOpenMountFolderButtonState()
+    End Sub
+
+    Private Async Function MountImageForOperationAsync(mountPath As String, index As Integer, isReadOnlyMount As Boolean) As Task(Of Boolean)
+        If _isMounted Then
+            Return True
+        End If
+
+        If String.IsNullOrWhiteSpace(_wimPath) Then
+            MessageBox.Show("Select a WIM image before continuing.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return False
+        End If
+
+        Try
+            Directory.CreateDirectory(mountPath)
+        Catch ex As Exception
+            MessageBox.Show("Unable to prepare the mount directory: " & ex.Message, "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return False
+        End Try
+
+        Dim args = String.Format("/Mount-WIM /WIMFile:""{0}"" /Index:{1} /MountDir:""{2}""", _wimPath, index, mountPath)
+        If isReadOnlyMount Then
+            args &= " /ReadOnly"
+        End If
+
+        ShowMountDebugInfo(args)
+
+        Dim result = Await RunDismSimpleAsync(args)
+        If result.ExitCode = 0 Then
+            _isMounted = True
+            UpdateWindowTitle()
+            UpdateMountUi()
+            Return True
+        End If
+
+        MessageBox.Show("Mount failed (code " & result.ExitCode & "):" & Environment.NewLine & result.StdErr, "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+        Return False
+    End Function
+
+    Private Function GetLogFilePath(mountPath As String) As String
+        If String.IsNullOrWhiteSpace(mountPath) OrElse Not Directory.Exists(mountPath) Then
+            Return Nothing
+        End If
+
+        Dim logFolder As String
+        Try
+            logFolder = Path.Combine(mountPath, ImageLogRelativeFolder)
+            Directory.CreateDirectory(logFolder)
+        Catch ex As Exception
+            Debug.WriteLine("Unable to prepare image log folder: " & ex.Message)
+            Return Nothing
+        End Try
+
+        Return Path.Combine(logFolder, ImageLogFileName)
+    End Function
+
+    Private Sub WriteToLog(path As String, message As String)
+        If String.IsNullOrEmpty(path) Then
+            Return
+        End If
+
+        Try
+            Dim directoryPath = System.IO.Path.GetDirectoryName(path)
+            If Not String.IsNullOrEmpty(directoryPath) Then
+                Directory.CreateDirectory(directoryPath)
+            End If
+
+            SyncLock _logSyncRoot
+                File.AppendAllText(path, message & Environment.NewLine)
+            End SyncLock
+        Catch ex As Exception
+            Debug.WriteLine("Failed to write to log: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub EnsureWinPeDirectories()
+        Directory.CreateDirectory(AppStorageRoot)
+        Directory.CreateDirectory(WinPeRootDirectory)
+        Directory.CreateDirectory(WinPeMountDirectory)
+        Directory.CreateDirectory(LogsDirectory)
+    End Sub
+
+    Private Function GetCopypeErrorDetails(command As String, result As (ExitCode As Integer, StdOut As String, StdErr As String)) As String
+        Dim primaryOutput = If(Not String.IsNullOrWhiteSpace(result.StdErr), result.StdErr.Trim(), result.StdOut.Trim())
+        Dim sb As New StringBuilder()
+        sb.AppendLine($"copype failed with exit code {result.ExitCode}.")
+        If Not String.IsNullOrWhiteSpace(primaryOutput) Then
+            sb.AppendLine(primaryOutput)
+        Else
+            sb.AppendLine("copype did not produce additional output.")
+        End If
+
+        Dim logPath As String = Nothing
+        Try
+            Directory.CreateDirectory(LogsDirectory)
+            logPath = Path.Combine(LogsDirectory, $"copype-error-{DateTime.UtcNow:yyyyMMddHHmmss}.log")
+            Dim logBuilder As New StringBuilder()
+            logBuilder.AppendLine($"Command: {command}")
+            logBuilder.AppendLine($"Exit Code: {result.ExitCode}")
+            logBuilder.AppendLine("STDOUT:")
+            logBuilder.AppendLine(result.StdOut)
+            logBuilder.AppendLine("STDERR:")
+            logBuilder.AppendLine(result.StdErr)
+            File.WriteAllText(logPath, logBuilder.ToString())
+        Catch ex As Exception
+            logPath = Nothing
+            Debug.WriteLine("Failed to write copype log: " & ex.Message)
+        End Try
+
+        If Not String.IsNullOrEmpty(logPath) Then
+            sb.AppendLine($"Details were saved to: {logPath}")
+        End If
+
+        Return sb.ToString().Trim()
+    End Function
+
+    Private Sub PersistLabPeManifest(manifest As LabPeManifestInfo)
+        If manifest Is Nothing Then
+            Return
+        End If
+
+        EnsureWinPeDirectories()
+
+        Try
+            Dim options As New JsonSerializerOptions With {.WriteIndented = True}
+            Dim json = JsonSerializer.Serialize(manifest, options)
+            File.WriteAllText(ManifestFilePath, json)
+        Catch ex As Exception
+            Debug.WriteLine("Unable to persist WinPE manifest: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub RefreshLabPeManifest()
+        If Not File.Exists(ManifestFilePath) Then
+            _labPeManifest = Nothing
+            _lastManifestExists = False
+            _lastManifestFileStamp = Nothing
+            UpdateWinPEUiState()
+            Return
+        End If
+
+        Try
+            Dim json = File.ReadAllText(ManifestFilePath)
+            _labPeManifest = JsonSerializer.Deserialize(Of LabPeManifestInfo)(json)
+            _lastManifestExists = True
+            _lastManifestFileStamp = File.GetLastWriteTimeUtc(ManifestFilePath)
+        Catch ex As Exception
+            _labPeManifest = Nothing
+            _lastManifestExists = False
+            _lastManifestFileStamp = Nothing
+            Debug.WriteLine("Failed to load WinPE manifest: " & ex.Message)
+        End Try
+
+        UpdateWinPEUiState()
+    End Sub
+
+    Private Sub StartWinPeFolderWatcher()
+        Try
+            StopWinPeFolderWatcher()
+
+            Dim manifestDir = Path.GetDirectoryName(ManifestFilePath)
+            Dim manifestName = Path.GetFileName(ManifestFilePath)
+            If String.IsNullOrEmpty(manifestDir) OrElse String.IsNullOrEmpty(manifestName) Then
+                Return
+            End If
+
+            Directory.CreateDirectory(manifestDir)
+
+            _winPeWatcher = New FileSystemWatcher(manifestDir) With {
+                .Filter = manifestName,
+                .NotifyFilter = NotifyFilters.FileName Or NotifyFilters.LastWrite Or NotifyFilters.CreationTime,
+                .IncludeSubdirectories = False,
+                .EnableRaisingEvents = True
+            }
+
+            AddHandler _winPeWatcher.Changed, AddressOf WinPeManifestWatcherChanged
+            AddHandler _winPeWatcher.Created, AddressOf WinPeManifestWatcherChanged
+            AddHandler _winPeWatcher.Deleted, AddressOf WinPeManifestWatcherChanged
+            AddHandler _winPeWatcher.Renamed, AddressOf WinPeManifestWatcherRenamed
+
+            EnsureWinPeManifestPolling()
+            CheckWinPeManifestState()
+        Catch ex As Exception
+            Debug.WriteLine("Failed to start WinPE watcher: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Sub StopWinPeFolderWatcher()
+        If _winPeWatcher Is Nothing Then
+            Return
+        End If
+
+        Try
+            RemoveHandler _winPeWatcher.Changed, AddressOf WinPeManifestWatcherChanged
+            RemoveHandler _winPeWatcher.Created, AddressOf WinPeManifestWatcherChanged
+            RemoveHandler _winPeWatcher.Deleted, AddressOf WinPeManifestWatcherChanged
+            RemoveHandler _winPeWatcher.Renamed, AddressOf WinPeManifestWatcherRenamed
+        Catch
+        End Try
+
+        _winPeWatcher.Dispose()
+        _winPeWatcher = Nothing
+        StopWinPeManifestPolling()
+    End Sub
+
+    Private Sub WinPeManifestWatcherChanged(sender As Object, e As FileSystemEventArgs)
+        HandleWinPeManifestEvent()
+    End Sub
+
+    Private Sub WinPeManifestWatcherRenamed(sender As Object, e As RenamedEventArgs)
+        HandleWinPeManifestEvent()
+    End Sub
+
+    Private Sub HandleWinPeManifestEvent()
+        Dispatcher.InvokeAsync(Sub()
+                                   CheckWinPeManifestState()
+                               End Sub, DispatcherPriority.Background)
+    End Sub
+
+    Private Sub EnsureWinPeManifestPolling()
+        If _winPeManifestPollTimer Is Nothing Then
+            _winPeManifestPollTimer = New DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, AddressOf WinPeManifestPollTick, Dispatcher.CurrentDispatcher)
+        End If
+
+        If Not _winPeManifestPollTimer.IsEnabled Then
+            _winPeManifestPollTimer.Start()
+        End If
+    End Sub
+
+    Private Sub StopWinPeManifestPolling()
+        If _winPeManifestPollTimer IsNot Nothing Then
+            _winPeManifestPollTimer.Stop()
+        End If
+    End Sub
+
+    Private Sub WinPeManifestPollTick(sender As Object, e As EventArgs)
+        CheckWinPeManifestState()
+    End Sub
+
+    Private Sub CheckWinPeManifestState()
+        Try
+            Dim manifestExists = File.Exists(ManifestFilePath)
+
+            If Not manifestExists Then
+                If _lastManifestExists OrElse _labPeManifest IsNot Nothing Then
+                    _lastManifestExists = False
+                    _lastManifestFileStamp = Nothing
+                    _labPeManifest = Nothing
+                    UpdateWinPEUiState()
+                    UpdateWinPEStatus("WinPE manifest removed.", "Use Create WinPE to generate a new image.")
+                End If
+                Return
+            End If
+
+            Dim lastWrite = File.GetLastWriteTimeUtc(ManifestFilePath)
+            If Not _lastManifestExists OrElse Not _lastManifestFileStamp.HasValue OrElse lastWrite > _lastManifestFileStamp.Value Then
+                RefreshLabPeManifest()
+                _lastManifestExists = True
+                _lastManifestFileStamp = lastWrite
+            End If
+        Catch ex As Exception
+            Debug.WriteLine("WinPE manifest poll failed: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Async Sub CreateUsbButton_Click(sender As Object, e As RoutedEventArgs)
+        If _operationInProgress Then
+            MessageBox.Show("Finish the current operation before creating bootable media.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        Dim disks = Await Task.Run(Function() EnumerateUsbDisks())
+
+        If disks.Count = 0 Then
+            MessageBox.Show("No removable USB disks were detected.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        Dim selector = New DiskSelectionWindow(disks, Function() EnumerateUsbDisks()) With {
+            .Owner = Me
+        }
+
+        Dim dialogResult = selector.ShowDialog()
+        If dialogResult.HasValue AndAlso dialogResult.Value AndAlso selector.SelectedDisk IsNot Nothing Then
+            Dim disk = selector.SelectedDisk
+            Await CreateUsbMediaAsync(disk)
+        End If
+    End Sub
+
+    Private Function EnumerateUsbDisks() As List(Of DiskInfo)
+        Dim disks As New List(Of DiskInfo)()
+
+        Try
+            Using searcher As New ManagementObjectSearcher("SELECT DeviceID, Index, Model, Size, MediaType, InterfaceType FROM Win32_DiskDrive")
+                For Each drive As ManagementObject In searcher.Get()
+                    Dim interfaceType = Convert.ToString(drive("InterfaceType"))
+                    Dim isUsb = String.Equals(interfaceType, "USB", StringComparison.OrdinalIgnoreCase)
+                    If Not isUsb Then
+                        Continue For
+                    End If
+
+                    Dim sizeValue As Long
+                    Long.TryParse(Convert.ToString(drive("Size")), sizeValue)
+
+                    Dim indexValue As Integer
+                    Integer.TryParse(Convert.ToString(drive("Index")), indexValue)
+
+                    Dim disk = New DiskInfo With {
+                        .Number = indexValue,
+                        .Model = Convert.ToString(drive("Model")),
+                        .SizeBytes = sizeValue,
+                        .MediaType = Convert.ToString(drive("MediaType")),
+                        .Connection = interfaceType,
+                        .DeviceId = Convert.ToString(drive("DeviceID")),
+                        .IsUsb = True,
+                        .DisplaySize = FormatBytes(sizeValue)
+                    }
+
+                    disks.Add(disk)
+                Next
+            End Using
+        Catch ex As Exception
+            Debug.WriteLine("Disk enumeration failed: " & ex.Message)
+        End Try
+
+        Return disks
+    End Function
+
+    Private Async Function CreateUsbMediaAsync(selectedDisk As DiskInfo) As Task
+        If selectedDisk Is Nothing Then
+            Return
+        End If
+
+        If selectedDisk.Number < 0 Then
+            MessageBox.Show("Unable to determine the disk number for the selected USB drive.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End If
+
+        If Not Directory.Exists(WinPeMediaDirectory) Then
+            MessageBox.Show("WinPE media was not found. Create WinPE before preparing USB media.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Warning)
+            Return
+        End If
+
+        Dim prompt = $"Disk #{selectedDisk.Number}: {selectedDisk.Model}{Environment.NewLine}Size: {selectedDisk.DisplaySize}{Environment.NewLine}{Environment.NewLine}All data on this disk will be deleted. Continue?"
+        Dim confirm = MessageBox.Show(prompt, "Prepare USB Disk", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+        If confirm <> MessageBoxResult.Yes Then
+            Return
+        End If
+
+        Dim bootVolumeLabel = GetBootVolumeLabelForCurrentBuild()
+
+        DisableAllControls()
+        StartDismIndicator()
+        Try
+            UpdateWinPEStatus("Preparing USB disk...", $"Disk #{selectedDisk.Number} ({selectedDisk.DisplaySize})", displayAsCreation:=True)
+
+            Dim prepared = Await PrepareUsbDiskAsync(selectedDisk, WinPeBootDriveLetter, WinPeDataDriveLetter, bootVolumeLabel, WinPeDataVolumeLabel)
+            If Not prepared Then
+                Return
+            End If
+
+            Dim bootReady = Await WaitForDriveReadyAsync(WinPeBootDriveLetter, TimeSpan.FromSeconds(30))
+            Dim dataReady = Await WaitForDriveReadyAsync(WinPeDataDriveLetter, TimeSpan.FromSeconds(30))
+            If Not (bootReady AndAlso dataReady) Then
+                MessageBox.Show("Windows did not expose the WinPE partitions (P: and I:) after disk preparation.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                Return
+            End If
+
+            Dim bootRoot = String.Format("{0}:\", Char.ToUpperInvariant(WinPeBootDriveLetter))
+            Dim dataRoot = String.Format("{0}:\", Char.ToUpperInvariant(WinPeDataDriveLetter))
+            UpdateWinPEStatus("Copying WinPE media...", $"Boot partition {bootRoot}", displayAsCreation:=True)
+            Await CopyWinPeMediaAsync(bootRoot)
+
+            Try
+                Directory.CreateDirectory(Path.Combine(dataRoot, WinPeDataVolumeLabel))
+            Catch
+            End Try
+
+            UpdateWinPEStatus("USB creation complete.", $"Boot media copied to {bootRoot}; image storage available at {dataRoot}", displayAsCreation:=True)
+            MessageBox.Show($"WinPE boot media was created on {bootRoot} with an images partition at {dataRoot}.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+        Catch ex As Exception
+            MessageBox.Show("Failed to create USB media: " & ex.Message, "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+        Finally
+            StopDismIndicator()
+            ClearWinPEStatus()
+            EnableAllControls()
+        End Try
+    End Function
+
+    Private Async Function PrepareUsbDiskAsync(disk As DiskInfo, bootLetter As Char, dataLetter As Char, bootVolumeLabel As String, dataVolumeLabel As String) As Task(Of Boolean)
+        Dim bootPartitionBytes = CalculateBootPartitionSizeBytes(disk.SizeBytes)
+        If bootPartitionBytes <= 0 Then
+            MessageBox.Show("The selected disk is too small to create separate WinPE and Images partitions.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return False
+        End If
+
+        Dim bootPartitionSizeMb = Math.Max(512, CInt(bootPartitionBytes \ (1024 * 1024)))
+        Dim scriptPath = Path.Combine(Path.GetTempPath(), $"dism-lab-diskpart-{Guid.NewGuid():N}.txt")
+        Dim bootLetterUpper = Char.ToUpperInvariant(bootLetter)
+        Dim dataLetterUpper = Char.ToUpperInvariant(dataLetter)
+        Dim bootLabel = If(String.IsNullOrWhiteSpace(bootVolumeLabel), WinPeBootVolumeLabel, bootVolumeLabel)
+        Dim dataLabel = If(String.IsNullOrWhiteSpace(dataVolumeLabel), WinPeDataVolumeLabel, dataVolumeLabel)
+
+        Dim scriptLines As String() = {
+            $"select disk {disk.Number}",
+            "clean",
+            "convert mbr",
+            $"create partition primary size={bootPartitionSizeMb}",
+            $"format fs=fat32 label=""{bootLabel}"" quick",
+            "active",
+            $"assign letter={bootLetterUpper}",
+            "create partition primary",
+            $"format fs=ntfs label=""{dataLabel}"" quick",
+            $"assign letter={dataLetterUpper}",
+            "exit"
+        }
+
+        Await File.WriteAllLinesAsync(scriptPath, scriptLines)
+
+        Dim result = Await RunCommandAsync("diskpart.exe", $"/s ""{scriptPath}""")
+
+        Try
+            File.Delete(scriptPath)
+        Catch
+        End Try
+
+        If result.ExitCode <> 0 Then
+            Dim detail = If(String.IsNullOrWhiteSpace(result.StdErr), result.StdOut, result.StdErr)
+            MessageBox.Show($"Disk preparation failed:{Environment.NewLine}{detail}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return False
+        End If
+
+        Return True
+    End Function
+
+    Private Async Function WaitForDriveReadyAsync(driveLetter As Char, timeout As TimeSpan) As Task(Of Boolean)
+        Dim deadline = DateTime.UtcNow + timeout
+        Dim root = String.Format("{0}:\", Char.ToUpperInvariant(driveLetter))
+
+        Do
+            Try
+                If Directory.Exists(root) Then
+                    Return True
+                End If
+            Catch
+            End Try
+
+            If DateTime.UtcNow >= deadline Then
+                Exit Do
+            End If
+
+            Await Task.Delay(500)
+        Loop
+
+        Return False
+    End Function
+
+    Private Async Function CopyWinPeMediaAsync(destinationRoot As String) As Task
+        Await Task.Run(Sub()
+                           CopyDirectoryTree(WinPeMediaDirectory, destinationRoot)
+                       End Sub)
+    End Function
+
+    ' Copy the WinPE media tree while emitting coarse progress updates.
+    Private Sub CopyDirectoryTree(source As String, destination As String)
+        If String.IsNullOrWhiteSpace(source) OrElse String.IsNullOrWhiteSpace(destination) Then
+            Throw New InvalidOperationException("Invalid source or destination for WinPE media copy.")
+        End If
+
+        Dim normalizedSource = source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        Directory.CreateDirectory(destination)
+
+        For Each dirPath In Directory.GetDirectories(normalizedSource, "*", System.IO.SearchOption.AllDirectories)
+            Dim relative = dirPath.Substring(normalizedSource.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            Dim targetDir = If(String.IsNullOrEmpty(relative), destination, Path.Combine(destination, relative))
+            Directory.CreateDirectory(targetDir)
+        Next
+
+        Dim files = Directory.GetFiles(normalizedSource, "*", System.IO.SearchOption.AllDirectories)
+        If files.Length = 0 Then
+            UpdateWinPEStatus("Copying WinPE media...", "No files to copy.", displayAsCreation:=True)
+            Return
+        End If
+
+        Dim processed = 0
+        For Each srcFile In files
+            processed += 1
+            Dim relative = srcFile.Substring(normalizedSource.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            Dim targetFile = Path.Combine(destination, relative)
+            Dim targetDir = Path.GetDirectoryName(targetFile)
+            If Not String.IsNullOrEmpty(targetDir) Then
+                Directory.CreateDirectory(targetDir)
+            End If
+
+            File.Copy(srcFile, targetFile, True)
+
+            If processed Mod 25 = 0 OrElse processed = files.Length Then
+                UpdateWinPEStatus("Copying WinPE media...", $"{processed}/{files.Length} files", displayAsCreation:=True)
+            End If
+        Next
+    End Sub
+
+    Private Sub OpenMountFolderButton_Click(sender As Object, e As RoutedEventArgs)
+        Dim mountPath As String = Nothing
+        If Not EnsureMountDirectory(mountPath) Then
+            Return
+        End If
+
+        Try
+            Process.Start(New ProcessStartInfo With {
+                .FileName = mountPath,
+                .UseShellExecute = True
+            })
+        Catch ex As Exception
+            MessageBox.Show("Unable to open mount directory: " & ex.Message, "Mount Folder", MessageBoxButton.OK, MessageBoxImage.Error)
+        End Try
+    End Sub
+
+    Private Sub ClearButton_Click(sender As Object, e As RoutedEventArgs)
+        If _operationInProgress Then
+            Return
+        End If
+
+        _wimPath = Nothing
+        _imageSizes.Clear()
+        _isMounted = False
+
+        If WimImagesListBox IsNot Nothing Then
+            WimImagesListBox.UnselectAll()
+            WimImagesListBox.Items.Clear()
+            WimImagesListBox.Visibility = Visibility.Collapsed
+        End If
+
+        HideLogReadOut()
+        ResetMountUi()
+        UpdateWindowTitle()
+
+        ' Immediately sync all action buttons with the cleared state
+        EnableAllControls()
+    End Sub
+
+    ' ==================== LOG FILE HANDLING ====================
+
+    ' Load and display log file after operations
+    Private Async Function LoadAndDisplayLogFileAsync(mountPath As String) As Task
+        If Log_read_out Is Nothing Then Return
+
+        Dim logPath = GetLogFilePath(mountPath)
+
+        ' Clear listbox and reset selection mode
+        Log_read_out.Items.Clear()
+        Log_read_out.SelectionMode = SelectionMode.Single
+
+        If Not File.Exists(logPath) Then
+            Log_read_out.Visibility = Visibility.Collapsed
+            Return
+        End If
+
+        Try
+            Dim lines = Await Task.Run(Of String())(Function() File.ReadAllLines(logPath))
+
+            For Each line In lines
+                If Not String.IsNullOrWhiteSpace(line) Then
+                    Log_read_out.Items.Add(line)
+                End If
+            Next
+
+            If Log_read_out.Items.Count > 0 Then
+                Log_read_out.Visibility = Visibility.Visible
+            End If
+        Catch ex As Exception
+            Debug.WriteLine($"Failed to read log file: {ex.Message}")
+        End Try
+    End Function
+
+    ' Enhanced LoadLogFileAsync to support display mode
+    Private Async Function LoadLogFileAsync(mountPath As String) As Task
+        Await LoadAndDisplayLogFileAsync(mountPath)
+    End Function
+
+    ' Hide Log_read_out after unmounting
+    Private Sub HideLogReadOut()
+        If Log_read_out IsNot Nothing Then
+            Log_read_out.Visibility = Visibility.Collapsed
+            Log_read_out.Items.Clear()
+        End If
+    End Sub
+
+    ' ==================== UNIFIED UNMOUNT FUNCTION ====================
+
+    ' Unified unmount function for operations
+    Private Async Function UnmountAfterOperationAsync(mountPath As String, commit As Boolean) As Task
+        If Not _isMounted Then Return
+
+        Dim initialSize As Long = 0
+        Try
+            initialSize = Await Task.Run(Function() GetDirectorySize(mountPath))
+        Catch
+        End Try
+
+        _expectedMountSizeBytes = initialSize
+        PrepareUnmountProgressUi(initialSize)
+
+        Dim commitSwitch As String = If(commit, "/Commit", "/Discard")
+        Dim unmountArgs = $"/Unmount-WIM /MountDir:""" & mountPath & """ " & commitSwitch
+
+        _mountMonitorCts = New CancellationTokenSource()
+        Dim monitorTask = MonitorUnmountDirAsync(mountPath, _mountMonitorCts.Token)
+
+        Dim result = Await RunDismSimpleAsync(unmountArgs)
+
+        _mountMonitorCts.Cancel()
+        Try
+            Await Task.WhenAny(monitorTask, Task.Delay(2000))
+        Catch
+        End Try
+
+        If result.ExitCode = 0 Then
+            _isMounted = False
+            UpdateWindowTitle()
+            UpdateMountUi()
+            HideLogReadOut()
+
+            ' Show success notification in progress panel
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Text = "100%"
+                MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
+            End If
+
+            ' Wait 3 seconds to show success, then reset
+            Await Task.Delay(3000)
+
+            ' Reset text color before hiding
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Foreground = New SolidColorBrush(Color.FromRgb(&HCC, &HCC, &HCC))
+            End If
+
+            ResetMountProgressUi()
+
+            Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
+        Else
+            MessageBox.Show("Failed to unmount image: " & result.StdErr, "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+        End If
+
+        ResetMountProgressUi()
+    End Function
+
+    ' ==================== EXPORT DRIVERS FUNCTIONALITY (OPTIONAL) ====================
+    ' NOTE: Only include this if you have an ExportDriversButton in your UI
+
+    Private Async Sub ExportDriversButton_Click(sender As Object, e As RoutedEventArgs)
+        If WimImagesListBox.SelectedItems.Count <> 1 Then
+            MessageBox.Show("Select exactly one index to export drivers.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return
+        End If
+
+        DisableAllControls() ' ✅ Updated
+
+
+
+
+
+
+        Try
+            Await ExportDriversAsync()
+        Finally
+            EnableAllControls() ' ✅ Updated
+        End Try
+    End Sub
+
+    Private Async Function ExportDriversAsync() As Task
+        If Not IsAdministrator() Then
+            MessageBox.Show("Administrator privileges required.", "DISM", MessageBoxButton.OK, MessageBoxImage.Warning)
+            Return
+        End If
+
+        Dim idx As Integer
+        If Not TryGetSelectedIndex(idx) Then
+            MessageBox.Show("Could not parse selected index.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End If
+
+        ' Show folder dialog
+        Dim folderDialog As New SaveFileDialog() With {
+            .Title = "Select destination folder for exported drivers",
+            .FileName = "SelectFolder",
+            .Filter = "Folder Selection|*.this.directory",
+            .CheckFileExists = False,
+            .CheckPathExists = True
+        }
+
+        If folderDialog.ShowDialog() <> True Then
+            Return
+        End If
+
+        Dim destinationPath = Path.GetDirectoryName(folderDialog.FileName)
+
+        If String.IsNullOrWhiteSpace(destinationPath) Then
+            MessageBox.Show("Invalid destination path selected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End If
+
+        Dim needsMount = Not _isMounted
+        Dim mountPath As String = Nothing
+        If Not EnsureMountDirectory(mountPath) Then
+            Return
+        End If
+
+        Try
+            DisableMountControls()
+
+            If needsMount Then
+                If Not Await MountImageForOperationAsync(mountPath, idx, True) Then ' Read-only
+                    MessageBox.Show("Failed to mount image. Driver export cancelled.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
+                    UpdateMountDirState()
+                    Return
+                End If
+            End If
+
+            ' Export drivers
+            If MountSizeProgressText IsNot Nothing Then
+                MountSizeProgressText.Text = "Exporting..."
+                MountSizeProgressTextDetail.Text = "Extracting drivers from mounted image"
+                MountSizeProgressText.Visibility = Visibility.Visible
+                MountSizeProgressTextDetail.Visibility = Visibility.Visible
+            End If
+
+            Dim args = $"/Image:""{mountPath}"" /Export-Driver /Destination:""" & destinationPath & """"
+            Dim result = Await RunDismSimpleAsync(args)
+
+            If result.ExitCode = 0 Then
+                If MountSizeProgressText IsNot Nothing Then
+                    MountSizeProgressText.Text = "100%"
+                    MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
+                    MountSizeProgressTextDetail.Text = "Driver export complete"
+                End If
+
+                Await Task.Delay(3000)
+
+                If MountSizeProgressText IsNot Nothing Then
+                    MountSizeProgressText.Foreground = New SolidColorBrush(Color.FromRgb(&HCC, &HCC, &HCC))
+                End If
+
+                ResetMountProgressUi()
+            Else
+                MessageBox.Show($"Driver export failed (code {result.ExitCode}):{Environment.NewLine}{result.StdErr}",
+                   "DISM",
+                   MessageBoxButton.OK,
+                   MessageBoxImage.Error)
+                ResetMountProgressUi()
+            End If
+
+            If needsMount Then
+                Await UnmountAfterOperationAsync(mountPath, False) ' Discard (read-only)
+            End If
+
+        Catch ex As Exception
+            MessageBox.Show($"Error during driver export:{Environment.NewLine}{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
+            ResetMountProgressUi()
+        Finally
+            UpdateMountDirState()
+        End Try
+    End Function
+
+    ' ==================== FINALIZATION ====================
+
+    ' Generic reset mount UI
+    Private Sub ResetMountUi()
+        If MountSizeProgressText IsNot Nothing Then
+            MountSizeProgressText.Text = " "
+            MountSizeProgressText.Visibility = Visibility.Hidden
+        End If
+        If MountSizeProgressTextDetail IsNot Nothing Then
+            MountSizeProgressTextDetail.Text = ""
+            MountSizeProgressTextDetail.Visibility = Visibility.Hidden
+        End If
+        If TitleLabel IsNot Nothing Then TitleLabel.Text = ""
+        UpdateActionButtonsState()
+        UpdateMountDirState()
+    End Sub
+
+    ' For unmount / cleanup
+    Private Async Function FinalizeUnmountAsync(mountPath As String) As Task
+        ' Aggressive cleanup: try to delete all files and folders in mount path
+        If Directory.Exists(mountPath) Then
+            Try
+                For Each filePath In Directory.GetFiles(mountPath, "*", SearchOption.AllDirectories)
+                    Try
+                        File.Delete(filePath)
+                    Catch
+                    End Try
+                Next
+                For Each dirPath In Directory.GetDirectories(mountPath, "*", SearchOption.AllDirectories)
+                    Try
+                        Directory.Delete(dirPath, True)
+                    Catch
+                    End Try
+                Next
+            Catch ex As Exception
+                ' Ignore errors during aggressive cleanup
+            End Try
+        End If
+
+        ' Finally, unmount and cleanup mountpoints
+        Await RunDismSimpleAsync($"/Unmount-WIM /MountDir:""{mountPath}"" /Discard")
+        Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
+    End Function
+
+    ' New generic log reader for async operations
+    Private Async Function ReadLogFileAsync(filePath As String, targetTextBox As TextBox) As Task
+        If String.IsNullOrWhiteSpace(filePath) OrElse Not File.Exists(filePath) Then
+            Return
+        End If
+
+        Try
+            ' Read all lines asynchronously
+            Dim lines = Await File.ReadAllLinesAsync(filePath)
+
+            ' Update UI in a background task
+            Await Dispatcher.InvokeAsync(Sub()
+                                             targetTextBox.Clear()
+                                             For Each line In lines
+                                                 targetTextBox.AppendText(line & Environment.NewLine)
+                                             Next
+                                         End Sub, DispatcherPriority.Background)
+        Catch ex As Exception
+            Debug.WriteLine($"Error reading log file: {ex.Message}")
+        End Try
+    End Function
+
+    Private Sub Log_read_out_Drop(sender As Object, e As DragEventArgs)
+        If Log_read_out Is Nothing OrElse Not e.Data.GetDataPresent(DataFormats.FileDrop) Then
+            Return
+        End If
+
+        Dim droppedFiles = TryCast(e.Data.GetData(DataFormats.FileDrop), String())
+        If droppedFiles Is Nothing OrElse droppedFiles.Length = 0 Then
+            Return
+        End If
+
+        EnsureWinPeDirectories()
+
+        For Each filePath In droppedFiles
+            If String.IsNullOrWhiteSpace(filePath) OrElse Not File.Exists(filePath) Then
+                Continue For
+            End If
+
+            Try
+                Dim fileName = Path.GetFileName(filePath)
+                Dim destination = Path.Combine(WinPEMountDir, fileName)
+                File.Copy(filePath, destination, True)
+                Log_read_out.Items.Add($"Copied: {fileName}")
+            Catch ex As Exception
+                Log_read_out.Items.Add($"Copy failed: {ex.Message}")
+            End Try
+        Next
+
+        If Log_read_out.Items.Count > 0 Then
+            Log_read_out.Visibility = Visibility.Visible
+        End If
+    End Sub
+
+    Private Sub Log_read_out_KeyDown(sender As Object, e As KeyEventArgs)
+        If Log_read_out Is Nothing OrElse e.Key <> Key.Delete Then
+            Return
+        End If
+
+        Dim selected = Log_read_out.SelectedItems.Cast(Of Object)().ToList()
+        If selected.Count = 0 AndAlso Log_read_out.Items.Count > 0 Then
+            Log_read_out.Items.RemoveAt(Log_read_out.Items.Count - 1)
+            Return
+        End If
+
+        For Each item In selected
+            Log_read_out.Items.Remove(item)
+        Next
+    End Sub
+
+    Private Sub UpdateWinPEUiState()
+        Dim hasManifest = _labPeManifest IsNot Nothing
+
+        If WinPEStatusText IsNot Nothing Then
+            If hasManifest Then
+                Dim archToken = If(String.IsNullOrWhiteSpace(_labPeManifest.Architecture), "Unknown", _labPeManifest.Architecture.ToUpperInvariant())
+                Dim timestampText As String = String.Empty
+                If _labPeManifest.GeneratedOn.HasValue Then
+                    Dim localStamp = _labPeManifest.GeneratedOn.Value.ToLocalTime()
+                    timestampText = $" ({localStamp:G})"
+                End If
+                Dim checkMark = ChrW(&H2713)
+                WinPEStatusText.Text = $"{checkMark} WinPE {archToken}{timestampText}"
+                WinPEStatusText.Visibility = Visibility.Visible
+            Else
+                WinPEStatusText.Text = String.Empty
+                WinPEStatusText.Visibility = Visibility.Collapsed
+            End If
+        End If
+
+        If CreateUsbButton IsNot Nothing Then
+            CreateUsbButton.Visibility = If(hasManifest, Visibility.Visible, Visibility.Collapsed)
+            CreateUsbButton.IsEnabled = hasManifest AndAlso Not _operationInProgress
+        End If
+    End Sub
+
+    <DllImport("dwmapi.dll", PreserveSig:=True)>
+    Private Shared Function DwmSetWindowAttribute(hwnd As IntPtr, attr As Integer, ByRef attrValue As Integer, attrSize As Integer) As Integer
+    End Function
+End Class
