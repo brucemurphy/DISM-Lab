@@ -93,7 +93,7 @@ Class MainWindow
     Private Const MinDataPartitionBytes As Long = 2L * 1024 * 1024 * 1024
     Private Const WinPeBootDriveLetter As Char = "P"c
     Private Const WinPeDataDriveLetter As Char = "I"c
-    Private Const WinPeBootVolumeLabel As String = "WINPE_ARCH"
+    Private Const WinPeBootVolumeLabel As String = "WinPE_ARCH"
     Private Const WinPeDataVolumeLabel As String = "Images"
 
     Private _winPeState As WinPeWizardState = WinPeWizardState.Idle
