@@ -29,7 +29,6 @@ Class MainWindow
     Private _imageSizes As New Dictionary(Of Integer, Long)()
     Private _expectedMountSizeBytes As Long = 0
     Private _mountMonitorCts As CancellationTokenSource
-    Dim SnapShotMountSize As Long
 
     ' Serialize DISM operations to avoid overlapping process executions
     Private ReadOnly _dismOpLock As New SemaphoreSlim(1, 1)
@@ -59,12 +58,6 @@ Class MainWindow
     Private Shared ReadOnly DefaultMountDirectory As String = "C:\Mount"
     Private ReadOnly _logSyncRoot As New Object()
 
-    ' Store initial mount directory size for progress tracking
-    Private _initialMountDirSize As Long = 0
-
-    ' Store first mount directory size captured during unmount
-    Private _mountDirSize As Long = 0
-
     ' Fields for driver/update selection UI
     Private _selectedDriverFiles As New List(Of String)()
     Private _selectedUpdateFiles As New List(Of String)()
@@ -77,14 +70,20 @@ Class MainWindow
     Private Shared ReadOnly DescLineRegex As New Regex("^Description\s*:\s*(.+)$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
     Private Shared ReadOnly SizeLineRegex As New Regex("^Size\s*:\s*([\d,]+)\s*bytes$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
     Private Shared ReadOnly SelectedIndexRegex As New Regex("^Index\s+(\d+):", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
-    Private Shared ReadOnly ArchitectureLineRegex As New Regex("^Architecture\s*:\s*(.+)$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
-    Private Shared ReadOnly MountDirLineRegex As New Regex("^Mount\s+Dir\s*:\s*(.+)$", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
 
     Private Enum WinPeWizardState
         Idle
         SelectingArchitecture
         SelectingOptionalComponents
     End Enum
+
+    ' Timing constants for UI operations
+    Private Const ProgressResetDelayMs As Integer = 1000
+    Private Const MonitoringPollIntervalMs As Integer = 500
+    Private Const SelectionModeSpinDelayMs As Integer = 100
+    Private Const MonitorCancellationTimeoutMs As Integer = 2000
+    Private Const SuccessDisplayDelayMs As Integer = 3000
+    Private Const ProgressUpdateThresholdBytes As Long = 1048576
 
     Private Const DwmwaUseImmersiveDarkMode As Integer = 20
     Private Const MaxFat32PartitionBytes As Long = CLng(32) * 1024 * 1024 * 1024
@@ -104,6 +103,7 @@ Class MainWindow
         {"arm64", New List(Of String) From {"WinPE-WMI", "WinPE-NetFX", "WinPE-Scripting", "WinPE-PowerShell", "WinPE-HTA"}}
     }
     Private ReadOnly _selectedOptionalComponents As New List(Of String)()
+    Private _selectedWinPeLanguage As String = "en-us" ' Default language
     Private _wimListBackup As List(Of Object)
     Private _logListBackup As List(Of Object)
     Private _hiddenButtonStates As Dictionary(Of UIElement, Visibility)
@@ -180,6 +180,7 @@ Class MainWindow
 
     Private Async Sub MainWindow_Loaded(sender As Object, e As RoutedEventArgs) Handles Me.Loaded
         Me.Title = BaseTitle
+        Me.Topmost = True
         EnableDarkTitleBar()
         If Not IsAdministrator() Then
             Dim result = MessageBox.Show("This application must be run as Administrator." & vbCrLf &
@@ -297,17 +298,25 @@ Class MainWindow
         _lastReportedPercentage = -1
     End Sub
 
+    ' HELPER: Set progress text with null checks and visibility management
+    Private Sub SetProgressText(header As String, detail As String, Optional visibility As Visibility = Visibility.Visible)
+        If MountSizeProgressText IsNot Nothing Then
+            MountSizeProgressText.Text = header
+            MountSizeProgressText.Visibility = visibility
+        End If
+
+        If MountSizeProgressTextDetail IsNot Nothing Then
+            MountSizeProgressTextDetail.Text = detail
+            MountSizeProgressTextDetail.Visibility = visibility
+        End If
+    End Sub
+
     ' Prepare UI for startup cleanup progress (countdown)
     Private Sub PrepareStartupCleanupProgressUi(initialSize As Long)
         ResetProgressTracking()
 
-        If MountSizeProgressText IsNot Nothing Then
-            Dim sizeStr = If(initialSize > 0, FormatBytes(initialSize), "Unknown")
-            MountSizeProgressText.Text = $"0%"
-            MountSizeProgressTextDetail.Text = $"{sizeStr} / {sizeStr}"
-            MountSizeProgressText.Visibility = Visibility.Visible
-            MountSizeProgressTextDetail.Visibility = Visibility.Visible
-        End If
+        Dim sizeStr = If(initialSize > 0, FormatBytes(initialSize), "Unknown")
+        SetProgressText("0%", $"{sizeStr} / {sizeStr}")
     End Sub
 
     Private Sub MainWindow_Closed(sender As Object, e As EventArgs) Handles Me.Closed
@@ -738,6 +747,15 @@ Class MainWindow
         Return False
     End Function
 
+    ' HELPER: Validate that exactly one WIM index is selected
+    Private Function ValidateSingleSelection(operationName As String) As Boolean
+        If WimImagesListBox.SelectedItems.Count <> 1 Then
+            MessageBox.Show($"Select exactly one index to {operationName}.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            Return False
+        End If
+        Return True
+    End Function
+
     Private Async Function MountSelectedImageWithDirCheckAsync() As Task
         If Not IsAdministrator() Then
             MessageBox.Show("Administrator privileges required.", "DISM", MessageBoxButton.OK, MessageBoxImage.Warning)
@@ -806,7 +824,7 @@ Class MainWindow
         ' Stop monitoring
         _mountMonitorCts.Cancel()
         Try
-            Await Task.WhenAny(monitorTask, Task.Delay(2000)) ' Wait up to 2 seconds for monitor to finish
+            Await Task.WhenAny(monitorTask, Task.Delay(MonitorCancellationTimeoutMs)) ' Wait up to 2 seconds for monitor to finish
         Catch
             ' Ignore cancellation exceptions
         End Try
@@ -823,7 +841,7 @@ Class MainWindow
             UpdateMountUi()
 
             ' Wait 3 seconds to show success, then reset
-            Await Task.Delay(3000)
+            Await Task.Delay(SuccessDisplayDelayMs)
 
             ' Reset text color before hiding
             If MountSizeProgressText IsNot Nothing Then
@@ -846,42 +864,27 @@ Class MainWindow
     Private Sub PrepareMountProgressUi()
         ResetProgressTracking()
 
-        If MountSizeProgressText IsNot Nothing Then
-            Dim est = If(_expectedMountSizeBytes > 0, FormatBytes(_expectedMountSizeBytes), "Unknown")
-            MountSizeProgressText.Text = "0%"
-            MountSizeProgressTextDetail.Text = $"0 / {est}"
-            MountSizeProgressText.Visibility = Visibility.Visible
-            MountSizeProgressTextDetail.Visibility = Visibility.Visible
-        End If
+        Dim est = If(_expectedMountSizeBytes > 0, FormatBytes(_expectedMountSizeBytes), "Unknown")
+        SetProgressText("0%", $"0 / {est}")
     End Sub
 
     Private Sub ShowOperationSummaryStatus(header As String, detail As String)
-        If MountSizeProgressText IsNot Nothing Then
-            MountSizeProgressText.Text = header
-            MountSizeProgressText.Visibility = Visibility.Visible
-        End If
-
-        If MountSizeProgressTextDetail IsNot Nothing Then
-            MountSizeProgressTextDetail.Text = detail
-            MountSizeProgressTextDetail.Visibility = Visibility.Visible
-        End If
+        SetProgressText(header, detail)
     End Sub
 
     Private Async Sub ResetMountProgressUi()
         ' Wait 1 second before hiding
-        Await Task.Delay(1000)  ' ⚠️ This delay may be too short
+        Await Task.Delay(ProgressResetDelayMs)
 
         _expectedMountSizeBytes = 0
 
         ' Reset and hide progress text blocks
         If MountSizeProgressText IsNot Nothing Then
             MountSizeProgressText.Text = " "
-            ' MountSizeProgressText.Visibility = Visibility.Collapsed  ' ❌ HIDDEN HERE
         End If
 
         If MountSizeProgressTextDetail IsNot Nothing Then
             MountSizeProgressTextDetail.Text = ""
-            'MountSizeProgressTextDetail.Visibility = Visibility.Collapsed  ' ❌ HIDDEN HERE
         End If
     End Sub
 
@@ -901,7 +904,7 @@ Class MainWindow
                 Await Dispatcher.InvokeAsync(Sub() UpdateMountSizeProgress(currentSize))
 
                 ' Wait before next check
-                Await Task.Delay(500, ct)
+                Await Task.Delay(MonitoringPollIntervalMs, ct)
 
             Catch ex As OperationCanceledException
                 Exit While
@@ -957,8 +960,7 @@ Class MainWindow
             .UseShellExecute = False,
             .RedirectStandardOutput = True,
             .RedirectStandardError = True,
-            .CreateNoWindow = True,
-            .WorkingDirectory = root  ' ❌ This one uses 'root' as WorkingDirectory - DELETE THIS VERSION
+            .CreateNoWindow = True
         }
 
             Using p As Process = Process.Start(psi)
@@ -997,7 +999,7 @@ Class MainWindow
 
         If _expectedMountSizeBytes <= 0 Then
             ' Only update if changed significantly (>1MB difference)
-            If Math.Abs(bytesCopied - _lastReportedBytes) > 1048576 Then
+            If Math.Abs(bytesCopied - _lastReportedBytes) > ProgressUpdateThresholdBytes Then
                 MountSizeProgressTextDetail.Text = $"{FormatBytes(bytesCopied)} / Unknown"
                 _lastReportedBytes = bytesCopied
             End If
@@ -1128,7 +1130,7 @@ Class MainWindow
         ' Stop monitoring
         _mountMonitorCts.Cancel()
         Try
-            Await Task.WhenAny(monitorTask, Task.Delay(2000)) ' Wait up to 2 seconds for monitor to finish
+            Await Task.WhenAny(monitorTask, Task.Delay(MonitorCancellationTimeoutMs)) ' Wait up to 2 seconds for monitor to finish
         Catch
             ' Ignore cancellation exceptions
         End Try
@@ -1148,7 +1150,7 @@ Class MainWindow
             End If
 
             ' Wait 3 seconds to show success, then reset
-            Await Task.Delay(3000)
+            Await Task.Delay(SuccessDisplayDelayMs)
 
             ' Reset text color before hiding
             If MountSizeProgressText IsNot Nothing Then
@@ -1170,13 +1172,8 @@ Class MainWindow
     Private Sub PrepareUnmountProgressUi(initialSize As Long)
         ResetProgressTracking()
 
-        If MountSizeProgressText IsNot Nothing Then
-            Dim sizeStr = If(initialSize > 0, FormatBytes(initialSize), "Unknown")
-            MountSizeProgressTextDetail.Text = $"{sizeStr} / {sizeStr}"
-            MountSizeProgressText.Text = "0%"
-            MountSizeProgressText.Visibility = Visibility.Visible
-            MountSizeProgressTextDetail.Visibility = Visibility.Visible
-        End If
+        Dim sizeStr = If(initialSize > 0, FormatBytes(initialSize), "Unknown")
+        SetProgressText("0%", $"{sizeStr} / {sizeStr}")
     End Sub
 
     ' Minimal unmount monitoring (fixed interval, no adaptive/stall logic)
@@ -1213,7 +1210,7 @@ Class MainWindow
             Await Dispatcher.InvokeAsync(Sub() UpdateUnmountSizeProgress(currentSize), DispatcherPriority.Background)
 
             Try
-                Await Task.Delay(500, ct) ' Fixed 500ms poll
+                Await Task.Delay(MonitoringPollIntervalMs, ct) ' Fixed 500ms poll
             Catch ex As OperationCanceledException
                 Exit While
             End Try
@@ -1258,7 +1255,7 @@ Class MainWindow
             Else
                 ' Really can't determine progress - show processing status with current size
                 ' This may happen if unmount completes quickly or if monitoring is too slow
-                If Math.Abs(currentBytes - _lastReportedBytes) > 1048576 Then ' Update every 1MB change
+                If Math.Abs(currentBytes - _lastReportedBytes) > ProgressUpdateThresholdBytes Then ' Update every 1MB change
                     MountSizeProgressText.Text = "Processing..."
                     MountSizeProgressTextDetail.Text = If(currentBytes > 0,
                         $"{FormatBytes(currentBytes)} remaining",
@@ -1563,33 +1560,89 @@ Class MainWindow
     End Function
 
     Private Async Function AddOptionalComponentsToWinPeAsync(optionalComponentRoot As String, components As IEnumerable(Of String)) As Task(Of Boolean)
-        If components Is Nothing Then
+        If components Is Nothing OrElse Not components.Any() Then
             Return True
         End If
 
-        For Each component In components
+        Dim componentsList = components.ToList()
+
+        ' Save log inside the mounted WinPE image so it's committed with the image
+        Dim logPath = GetLogFilePath(WinPeMountDirectory)
+        If String.IsNullOrWhiteSpace(logPath) Then
+            Debug.WriteLine("Unable to determine WinPE log path. Logging will be skipped.")
+        End If
+
+        Dim timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+
+        ' Write log header
+        WriteToLog(logPath, "")
+        WriteToLog(logPath, $"========== WinPE Optional Components Installation - {timestamp} ==========")
+        WriteToLog(logPath, $"Architecture: {_selectedWinPeArchitecture}")
+        WriteToLog(logPath, $"Language: {_selectedWinPeLanguage}")
+        WriteToLog(logPath, $"Total Components: {componentsList.Count}")
+        WriteToLog(logPath, "")
+
+        Dim totalComponents = componentsList.Count
+        Dim processedCount = 0
+
+        For Each component In componentsList
             Dim trimmedName = component?.Trim()
             If String.IsNullOrEmpty(trimmedName) Then
                 Continue For
             End If
 
+            processedCount += 1
+
+            ' Install base component package
             Dim packagePath = Path.Combine(optionalComponentRoot, trimmedName & ".cab")
             If Not File.Exists(packagePath) Then
-                MessageBox.Show($"Optional component '{trimmedName}' was not found at:{Environment.NewLine}{packagePath}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                Dim errMsg = $"Optional component '{trimmedName}' was not found at:{Environment.NewLine}{packagePath}"
+                WriteToLog(logPath, $"[{timestamp}] ERROR: {trimmedName} - Package not found")
+                MessageBox.Show(errMsg, "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
                 Return False
             End If
 
+            ' Update progress UI - Base component
+            UpdateWinPEStatus($"Installing component {processedCount}/{totalComponents}", $"Applying {trimmedName}.cab...", displayAsCreation:=True)
+
+            ' Install base component
             Dim addResult = Await RunDismSimpleAsync($"/Image:""{WinPeMountDirectory}"" /Add-Package /PackagePath:""" & packagePath & """")
+            Dim baseStatus = If(addResult.ExitCode = 0, "SUCCESS", $"FAILED (Code: {addResult.ExitCode})")
+            WriteToLog(logPath, $"[{timestamp}] BASE: {trimmedName}.cab - {baseStatus}")
+
             If addResult.ExitCode <> 0 Then
                 MessageBox.Show($"Failed to add {trimmedName}:{Environment.NewLine}{addResult.StdErr}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
                 Return False
             End If
 
-            Dim satelliteCab = Path.Combine(optionalComponentRoot, "en-us", trimmedName & ".cab")
+            Await Task.Delay(SelectionModeSpinDelayMs)
+
+            ' Install language-specific component if available
+            Dim languageCabName = $"{trimmedName}_{_selectedWinPeLanguage}.cab"
+            Dim satelliteCab = Path.Combine(optionalComponentRoot, _selectedWinPeLanguage, languageCabName)
+
             If File.Exists(satelliteCab) Then
-                Await RunDismSimpleAsync($"/Image:""{WinPeMountDirectory}"" /Add-Package /PackagePath:""" & satelliteCab & """")
+                ' Update progress UI - Language component
+                UpdateWinPEStatus($"Installing component {processedCount}/{totalComponents}", $"Applying {_selectedWinPeLanguage}\{languageCabName}...", displayAsCreation:=True)
+
+                Dim langResult = Await RunDismSimpleAsync($"/Image:""{WinPeMountDirectory}"" /Add-Package /PackagePath:""" & satelliteCab & """")
+                Dim langStatus = If(langResult.ExitCode = 0, "SUCCESS", $"FAILED (Code: {langResult.ExitCode})")
+                WriteToLog(logPath, $"[{timestamp}] LANG: {_selectedWinPeLanguage}\{languageCabName} - {langStatus}")
+
+                Await Task.Delay(SelectionModeSpinDelayMs)
+            Else
+                WriteToLog(logPath, $"[{timestamp}] LANG: {_selectedWinPeLanguage}\{languageCabName} - SKIPPED (not found)")
             End If
         Next
+
+        WriteToLog(logPath, "")
+        WriteToLog(logPath, $"========== Installation Complete - {totalComponents} components processed ==========")
+        WriteToLog(logPath, "")
+
+        ' Show completion
+        UpdateWinPEStatus("Components installed", $"{totalComponents} component(s) with {_selectedWinPeLanguage} language packs", displayAsCreation:=True)
+
+        Await Task.Delay(MonitorCancellationTimeoutMs)
 
         Return True
     End Function
@@ -1651,7 +1704,6 @@ Class MainWindow
 
         ' ✅ Unmount button: Show when mounted, always enabled when visible
         If UnmountActionButton IsNot Nothing Then
-            ' Dim mountPath = GetConfiguredMountDirectory() ' Reuse the mount path already computed
             Dim shouldShow = showMountedButtons AndAlso Not IsDirectoryEmpty(mountPath)
             UnmountActionButton.Visibility = If(shouldShow, Visibility.Visible, Visibility.Collapsed)
             UnmountActionButton.IsEnabled = True ' ✅ Always enabled when visible
@@ -1678,8 +1730,7 @@ Class MainWindow
     End Sub
 
     Private Async Sub ExportImageButton_Click(sender As Object, e As RoutedEventArgs)
-        If WimImagesListBox.SelectedItems.Count <> 1 Then
-            MessageBox.Show("Select exactly one index to export.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+        If Not ValidateSingleSelection("export") Then
             Return
         End If
 
@@ -1798,13 +1849,8 @@ Class MainWindow
     Private Sub PrepareExportProgressUi()
         ResetProgressTracking()
 
-        If MountSizeProgressText IsNot Nothing Then
-            Dim est = If(_expectedMountSizeBytes > 0, FormatBytes(_expectedMountSizeBytes), "Unknown")
-            MountSizeProgressText.Text = "0%"
-            MountSizeProgressTextDetail.Text = $"0 / {est}"
-            MountSizeProgressText.Visibility = Visibility.Visible
-            MountSizeProgressTextDetail.Visibility = Visibility.Visible
-        End If
+        Dim est = If(_expectedMountSizeBytes > 0, FormatBytes(_expectedMountSizeBytes), "Unknown")
+        SetProgressText("0%", $"0 / {est}")
     End Sub
 
     ' OPTIMIZED: Monitor export progress with file size tracking
@@ -1900,8 +1946,7 @@ Class MainWindow
     'Private _updateSelectionMode As Boolean = False
 
     Private Async Sub AddDriversButton_Click(sender As Object, e As RoutedEventArgs)
-        If WimImagesListBox.SelectedItems.Count <> 1 Then
-            MessageBox.Show("Select exactly one index to add drivers.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+        If Not ValidateSingleSelection("add drivers") Then
             Return
         End If
 
@@ -2046,7 +2091,7 @@ Class MainWindow
 
                                   ' Wait for user to make selection
                                   While _driverSelectionMode
-                                      Thread.Sleep(100)
+                                      Thread.Sleep(SelectionModeSpinDelayMs)
                                   End While
 
                                   ' Return selected files
@@ -2173,7 +2218,7 @@ Class MainWindow
             WriteToLog(logPath, logEntry)
 
             ' Small delay to show each driver being processed
-            Await Task.Delay(100)
+            Await Task.Delay(SelectionModeSpinDelayMs)
         Next
 
         WriteToLog(logPath, $"========== Total Drivers Processed: {totalDrivers} ==========")
@@ -2189,7 +2234,7 @@ Class MainWindow
             MountSizeProgressTextDetail.Text = $"{totalDrivers} driver(s) processed"
         End If
 
-        Await Task.Delay(3000)
+        Await Task.Delay(SuccessDisplayDelayMs)
 
         ' Reset text color
         If MountSizeProgressText IsNot Nothing Then
@@ -2280,7 +2325,36 @@ Class MainWindow
             Return
         End If
 
+        ' Collect components in the order they appear in Log_read_out
+        Dim orderedComponents As New List(Of String)()
+        If Log_read_out IsNot Nothing Then
+            For Each item In Log_read_out.Items
+                Dim componentName = TryCast(item, String)
+                If Not String.IsNullOrWhiteSpace(componentName) Then
+                    orderedComponents.Add(componentName)
+                End If
+            Next
+        End If
+
+        ' Store ordered components for installation
+        _selectedOptionalComponents.Clear()
+        _selectedOptionalComponents.AddRange(orderedComponents)
+
+        ' Disable wizard controls during WinPE creation
         WinPEFinishButton.IsEnabled = False
+        If WinPECancelButton IsNot Nothing Then
+            WinPECancelButton.IsEnabled = False
+        End If
+        If WimImagesListBox IsNot Nothing Then
+            WimImagesListBox.IsEnabled = False
+        End If
+        If Log_read_out IsNot Nothing Then
+            Log_read_out.IsEnabled = False
+        End If
+        If WinPELanguageComboBox IsNot Nothing Then
+            WinPELanguageComboBox.IsEnabled = False
+        End If
+
         Try
             Dim created = Await CreateWinPeImageAsync(_selectedWinPeArchitecture)
             If created Then
@@ -2291,7 +2365,20 @@ Class MainWindow
         Catch ex As Exception
             MessageBox.Show("Unable to create WinPE: " & ex.Message, "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
         Finally
+            ' Re-enable wizard controls after operation completes
             WinPEFinishButton.IsEnabled = True
+            If WinPECancelButton IsNot Nothing Then
+                WinPECancelButton.IsEnabled = True
+            End If
+            If WimImagesListBox IsNot Nothing Then
+                WimImagesListBox.IsEnabled = True
+            End If
+            If Log_read_out IsNot Nothing Then
+                Log_read_out.IsEnabled = True
+            End If
+            If WinPELanguageComboBox IsNot Nothing Then
+                WinPELanguageComboBox.IsEnabled = True
+            End If
         End Try
     End Sub
 
@@ -2332,14 +2419,33 @@ Class MainWindow
         _winPeState = WinPeWizardState.SelectingOptionalComponents
         ShowWinPeWizardButtons(showNext:=False, showFinish:=True)
 
+        ' Dynamically discover available optional components from ADK
+        Dim copypePath = LocateCopypeScript()
+        Dim discoveredOCs As List(Of String) = Nothing
+        Dim availableLanguages As List(Of String) = Nothing
+
+        If Not String.IsNullOrEmpty(copypePath) Then
+            Dim archToken = MapToCopypeArchitecture(_selectedWinPeArchitecture)
+            Dim ocDirectory = GetOptionalComponentsDirectory(copypePath, archToken)
+
+            If Not String.IsNullOrEmpty(ocDirectory) AndAlso Directory.Exists(ocDirectory) Then
+                discoveredOCs = DiscoverOptionalComponents(ocDirectory)
+                availableLanguages = DiscoverAvailableLanguages(ocDirectory)
+            End If
+        End If
+
+        ' Fallback to hardcoded list if discovery fails
+        If discoveredOCs Is Nothing OrElse discoveredOCs.Count = 0 Then
+            If Not _winPeOptionalComponents.TryGetValue(_selectedWinPeArchitecture, discoveredOCs) Then
+                discoveredOCs = _winPeOptionalComponents(_winPeArchitectures.First())
+            End If
+        End If
+
+        ' Populate available components in WimImagesListBox
         If WimImagesListBox IsNot Nothing Then
             WimImagesListBox.SelectionMode = SelectionMode.Single
             WimImagesListBox.Items.Clear()
-            Dim ocList As List(Of String) = Nothing
-            If Not _winPeOptionalComponents.TryGetValue(_selectedWinPeArchitecture, ocList) Then
-                ocList = _winPeOptionalComponents(_winPeArchitectures.First())
-            End If
-            For Each ocName In ocList
+            For Each ocName In discoveredOCs
                 Dim item As New ListBoxItem With {
                     .Content = ocName,
                     .Tag = ocName
@@ -2348,9 +2454,52 @@ Class MainWindow
             Next
         End If
 
+        ' Populate language dropdown
+        If WinPELanguageComboBox IsNot Nothing Then
+            WinPELanguageComboBox.Items.Clear()
+
+            If availableLanguages IsNot Nothing AndAlso availableLanguages.Count > 0 Then
+                For Each lang In availableLanguages
+                    Dim comboItem As New ComboBoxItem With {
+                        .Content = lang,
+                        .Tag = lang,
+                        .Foreground = New SolidColorBrush(Colors.White),
+                        .Background = New SolidColorBrush(Color.FromRgb(&H2D, &H2D, &H30))
+                    }
+                    WinPELanguageComboBox.Items.Add(comboItem)
+                Next
+
+                ' Select en-us by default if available
+                Dim defaultLangIndex = availableLanguages.IndexOf("en-us")
+                If defaultLangIndex >= 0 Then
+                    WinPELanguageComboBox.SelectedIndex = defaultLangIndex
+                ElseIf availableLanguages.Count > 0 Then
+                    WinPELanguageComboBox.SelectedIndex = 0
+                End If
+            Else
+                ' Fallback to en-us only
+                Dim comboItem As New ComboBoxItem With {
+                    .Content = "en-us",
+                    .Tag = "en-us",
+                    .Foreground = New SolidColorBrush(Colors.White),
+                    .Background = New SolidColorBrush(Color.FromRgb(&H2D, &H2D, &H30))
+                }
+                WinPELanguageComboBox.Items.Add(comboItem)
+                WinPELanguageComboBox.SelectedIndex = 0
+            End If
+
+            WinPELanguageComboBox.Visibility = Visibility.Visible
+        End If
+
+        ' Show language label
+        If WinPELanguageLabel IsNot Nothing Then
+            WinPELanguageLabel.Visibility = Visibility.Visible
+        End If
+
+        ' Clear selected components list
         If Log_read_out IsNot Nothing Then
             Log_read_out.Items.Clear()
-            Log_read_out.SelectionMode = SelectionMode.Multiple
+            Log_read_out.SelectionMode = SelectionMode.Single
             Log_read_out.Visibility = Visibility.Visible
         End If
     End Sub
@@ -2359,6 +2508,17 @@ Class MainWindow
         _winPeState = WinPeWizardState.Idle
         _selectedWinPeArchitecture = Nothing
         _selectedOptionalComponents.Clear()
+        _selectedWinPeLanguage = "en-us" ' Reset to default
+
+        ' Hide language dropdown and label
+        If WinPELanguageComboBox IsNot Nothing Then
+            WinPELanguageComboBox.Visibility = Visibility.Collapsed
+        End If
+
+        If WinPELanguageLabel IsNot Nothing Then
+            WinPELanguageLabel.Visibility = Visibility.Collapsed
+        End If
+
         ShowWinPeWizardButtons(showNext:=False, showFinish:=False)
         RestoreListState()
         RestoreHiddenButtons()
@@ -2425,7 +2585,8 @@ Class MainWindow
             AddDriversButton, ApplyUpdatesButton, OpenMountFolderButton, SelectAllDriversButton,
             StartDriverProcessButton, CancelDriverProcessButton, SelectAllUpdatesButton,
             StartUpdateProcessButton, CancelUpdateProcessButton, DeleteEntryButton,
-            _CreateWinPE, _CreateWinPE_Copy, ClearButton, CreateUsbButton
+            _CreateWinPE, _CreateWinPE_Copy, ClearButton, CreateUsbButton,
+            WinPELanguageComboBox, WinPELanguageLabel
         }
 
         _hiddenButtonStates = New Dictionary(Of UIElement, Visibility)()
@@ -2469,13 +2630,83 @@ Class MainWindow
     End Sub
 
     Private Sub AddOptionalComponentSelection(componentName As String)
-        If _selectedOptionalComponents.Contains(componentName) Then
+        ' Allow duplicates - user controls order and can add same component multiple times if needed
+        If Log_read_out IsNot Nothing Then
+            Log_read_out.Items.Add(componentName)
+        End If
+    End Sub
+
+    ' Discover optional components from ADK directory
+    Private Function DiscoverOptionalComponents(ocDirectory As String) As List(Of String)
+        Dim components As New List(Of String)()
+
+        If String.IsNullOrWhiteSpace(ocDirectory) OrElse Not Directory.Exists(ocDirectory) Then
+            Return components
+        End If
+
+        Try
+            Dim cabFiles = Directory.GetFiles(ocDirectory, "WinPE-*.cab", SearchOption.TopDirectoryOnly)
+
+            For Each cabFile In cabFiles
+                Dim fileName = Path.GetFileNameWithoutExtension(cabFile)
+                ' Only add if it's a base component (not a language-specific one)
+                If Not String.IsNullOrWhiteSpace(fileName) AndAlso Not fileName.Contains("_") Then
+                    components.Add(fileName)
+                End If
+            Next
+
+            ' Sort alphabetically for consistent UI
+            components.Sort()
+        Catch ex As Exception
+            Debug.WriteLine($"Failed to discover optional components: {ex.Message}")
+        End Try
+
+        Return components
+    End Function
+
+    ' Discover available languages from ADK directory
+    Private Function DiscoverAvailableLanguages(ocDirectory As String) As List(Of String)
+        Dim languages As New List(Of String)()
+
+        If String.IsNullOrWhiteSpace(ocDirectory) OrElse Not Directory.Exists(ocDirectory) Then
+            Return languages
+        End If
+
+        Try
+            Dim subdirs = Directory.GetDirectories(ocDirectory, "*", SearchOption.TopDirectoryOnly)
+
+            For Each subdir In subdirs
+                Dim dirName = Path.GetFileName(subdir)
+                ' Language folders are typically named like "en-us", "ar-sa", etc. (contains hyphen)
+                If Not String.IsNullOrWhiteSpace(dirName) AndAlso dirName.Contains("-") Then
+                    languages.Add(dirName)
+                End If
+            Next
+
+            ' Sort alphabetically, but prioritize en-us
+            languages.Sort()
+            If languages.Contains("en-us") Then
+                languages.Remove("en-us")
+                languages.Insert(0, "en-us")
+            End If
+        Catch ex As Exception
+            Debug.WriteLine($"Failed to discover languages: {ex.Message}")
+        End Try
+
+        Return languages
+    End Function
+
+    ' Handle language selection change
+    Private Sub WinPELanguageComboBox_SelectionChanged(sender As Object, e As SelectionChangedEventArgs)
+        If WinPELanguageComboBox Is Nothing OrElse WinPELanguageComboBox.SelectedItem Is Nothing Then
             Return
         End If
 
-        _selectedOptionalComponents.Add(componentName)
-        If Log_read_out IsNot Nothing Then
-            Log_read_out.Items.Add(componentName)
+        Dim selectedItem = TryCast(WinPELanguageComboBox.SelectedItem, ComboBoxItem)
+        Dim language = TryCast(selectedItem?.Tag, String)
+
+        If Not String.IsNullOrWhiteSpace(language) Then
+            _selectedWinPeLanguage = language
         End If
     End Sub
 
@@ -2589,6 +2820,7 @@ Class MainWindow
             If String.IsNullOrEmpty(copypePath) Then
                 UpdateWinPEStatus("copype.cmd was not found. Install the Windows ADK with the WinPE add-ons and try again.", displayAsCreation:=True)
                 MessageBox.Show("Unable to locate copype.cmd. Install the Windows ADK with the WinPE add-ons and try again.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                operationFailed = True
                 Return False
             End If
 
@@ -2598,6 +2830,7 @@ Class MainWindow
             If Not workspaceReady Then
                 UpdateWinPEStatus("Unable to reset the WinPE workspace. Close any open files and try again.", displayAsCreation:=True)
                 MessageBox.Show("Unable to reset the WinPE workspace. Close any open files under the WinPE folder and try again.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                operationFailed = True
                 Return False
             End If
 
@@ -2622,6 +2855,7 @@ Class MainWindow
                 UpdateWinPEStatus("copype failed. See the generated log for details.", displayAsCreation:=True)
                 Dim detailText = GetCopypeErrorDetails(copypeCommand, copypeResult)
                 MessageBox.Show(detailText, "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                operationFailed = True
                 Return False
             End If
 
@@ -2629,6 +2863,7 @@ Class MainWindow
             If Not File.Exists(bootWimPath) Then
                 UpdateWinPEStatus("copype did not produce boot.wim. Verify your ADK installation.", displayAsCreation:=True)
                 MessageBox.Show("boot.wim was not created by copype.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                operationFailed = True
                 Return False
             End If
 
@@ -2639,6 +2874,7 @@ Class MainWindow
                 Dim mountResult = Await RunDismSimpleAsync($"/Mount-Image /ImageFile:""{bootWimPath}"" /Index:1 /MountDir:""" & WinPeMountDirectory & """")
                 If mountResult.ExitCode <> 0 Then
                     MessageBox.Show($"Failed to mount WinPE image:{Environment.NewLine}{mountResult.StdErr}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+                    operationFailed = True
                     Return False
                 End If
 
@@ -2688,6 +2924,18 @@ Class MainWindow
             End If
 
             If Not shouldCommit OrElse Not operationSucceeded OrElse operationFailed Then
+                ' ✅ ROBUST ERROR RECOVERY: Cleanup mount directory before returning failure
+                Try
+                    Debug.WriteLine("WinPE creation failed - performing mount cleanup")
+                    If Directory.Exists(WinPeMountDirectory) AndAlso Not IsDirectoryEmpty(WinPeMountDirectory) Then
+                        Debug.WriteLine($"Forcing unmount of {WinPeMountDirectory}")
+                        Await RunDismSimpleAsync($"/Unmount-Image /MountDir:""{WinPeMountDirectory}"" /Discard")
+                    End If
+                    Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
+                Catch ex As Exception
+                    Debug.WriteLine($"WinPE mount cleanup failed (non-fatal): {ex.Message}")
+                End Try
+
                 Return False
             End If
 
@@ -2704,6 +2952,12 @@ Class MainWindow
 
             Return True
         Finally
+            ' ✅ ROBUST ERROR RECOVERY: Reset UI to launch state if operation failed
+            If Not operationSucceeded OrElse operationFailed Then
+                Debug.WriteLine("WinPE creation failed - resetting UI to launch state")
+                ExitWinPeWizard()
+            End If
+
             StartWinPeFolderWatcher()
             If controlsLocked Then
                 EnableAllControls()
@@ -2715,8 +2969,7 @@ Class MainWindow
     ' ==================== ENHANCED: APPLY UPDATES FUNCTIONALITY WITH SELECTION UI ====================
 
     Private Async Sub ApplyUpdatesButton_Click(sender As Object, e As RoutedEventArgs)
-        If WimImagesListBox.SelectedItems.Count <> 1 Then
-            MessageBox.Show("Select exactly one index to apply updates.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+        If Not ValidateSingleSelection("apply updates") Then
             Return
         End If
 
@@ -2863,7 +3116,7 @@ Class MainWindow
 
                                   ' Wait for user to make selection
                                   While _updateSelectionMode
-                                      Thread.Sleep(100)
+                                      Thread.Sleep(SelectionModeSpinDelayMs)
                                   End While
 
                                   ' Return selected files
@@ -2992,7 +3245,7 @@ Class MainWindow
             WriteToLog(logPath, logEntry)
 
             ' Small delay to show each update being processed
-            Await Task.Delay(100)
+            Await Task.Delay(SelectionModeSpinDelayMs)
         Next
 
         WriteToLog(logPath, $"========== Total Updates Processed: {totalUpdates} ==========")
@@ -3008,7 +3261,7 @@ Class MainWindow
             MountSizeProgressTextDetail.Text = $"{totalUpdates} update(s) processed"
         End If
 
-        Await Task.Delay(3000)
+        Await Task.Delay(SuccessDisplayDelayMs)
 
         ' Reset text color
         If MountSizeProgressText IsNot Nothing Then
@@ -3705,8 +3958,7 @@ Class MainWindow
     ' NOTE: Only include this if you have an ExportDriversButton in your UI
 
     Private Async Sub ExportDriversButton_Click(sender As Object, e As RoutedEventArgs)
-        If WimImagesListBox.SelectedItems.Count <> 1 Then
-            MessageBox.Show("Select exactly one index to export drivers.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+        If Not ValidateSingleSelection("export drivers") Then
             Return
         End If
 
