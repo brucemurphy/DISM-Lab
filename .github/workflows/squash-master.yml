@@ -1,0 +1,56 @@
+name: Squash master to single clean commit
+
+# Run this manually from the Actions tab any time you want to collapse
+# all commits on master into one clean snapshot commit.
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Commit message for the single clean commit (leave blank to use the latest commit message)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  squash:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Resolve commit message
+        env:
+          INPUT_MSG: ${{ github.event.inputs.message }}
+        run: |
+          if [ -n "$INPUT_MSG" ]; then
+            printf '%s' "$INPUT_MSG" > /tmp/commit-message.txt
+          else
+            git log -1 --pretty=%B > /tmp/commit-message.txt
+          fi
+
+      - name: Check commit count
+        id: count
+        run: echo "total=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Squash all commits into one
+        if: steps.count.outputs.total != '1'
+        run: |
+          git checkout --orphan single-commit
+          git add -A
+          git commit -F /tmp/commit-message.txt
+          git push origin single-commit:master --force
+          echo "Done — master now has 1 clean commit."
+
+      - name: Already clean
+        if: steps.count.outputs.total == '1'
+        run: echo "master already has exactly 1 commit — nothing to do."
