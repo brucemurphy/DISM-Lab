@@ -1,0 +1,643 @@
+﻿<Window x:Name="DISM_Lab" x:Class="MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="DISM Lab"
+        Height="768"
+        Width="1280"
+        WindowStyle="SingleBorderWindow"
+        Background="Black"
+        WindowStartupLocation="CenterScreen" Icon="/DISMLab.png">
+    <Window.Resources>
+        <!-- Dark theme brushes to match the provided VHDX layout -->
+        <SolidColorBrush x:Key="ListBox.Static.Background" Color="#BF000000"/>
+        <SolidColorBrush x:Key="ListBox.Static.Border" Color="#FF3F3F3F"/>
+        <SolidColorBrush x:Key="ListBox.Disabled.Background" Color="#BF000000"/>
+        <SolidColorBrush x:Key="ListBox.Disabled.Border" Color="#FF2D2D2D"/>
+        <Style x:Key="ListBoxRoundedStyle" TargetType="{x:Type ListBox}">
+            <Setter Property="Background" Value="{StaticResource ListBox.Static.Background}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource ListBox.Static.Border}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground" Value="#FFFAFAFA"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="ScrollViewer.CanContentScroll" Value="true"/>
+            <Setter Property="ScrollViewer.PanningMode" Value="Both"/>
+            <Setter Property="Stylus.IsFlicksEnabled" Value="False"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ListBox}">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="1" SnapsToDevicePixels="true" CornerRadius="5">
+                            <ScrollViewer Focusable="false" Padding="{TemplateBinding Padding}">
+                                <ItemsPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                            </ScrollViewer>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled" Value="false">
+                                <Setter Property="Background" TargetName="Bd" Value="{StaticResource ListBox.Disabled.Background}"/>
+                                <Setter Property="BorderBrush" TargetName="Bd" Value="{StaticResource ListBox.Disabled.Border}"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsGrouping" Value="true"/>
+                                    <Condition Property="VirtualizingPanel.IsVirtualizingWhenGrouping" Value="false"/>
+                                </MultiTrigger.Conditions>
+                                <Setter Property="ScrollViewer.CanContentScroll" Value="false"/>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- keep item styles; selection colors are already dark-friendly -->
+        <Style x:Key="FocusVisual">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Rectangle Margin="2" StrokeDashArray="1 2" Stroke="{DynamicResource {x:Static SystemColors.ControlTextBrushKey}}" SnapsToDevicePixels="true" StrokeThickness="1"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <SolidColorBrush x:Key="Item.MouseOver.Background" Color="#1F26A0DA"/>
+        <SolidColorBrush x:Key="Item.MouseOver.Border" Color="#a826A0Da"/>
+        <SolidColorBrush x:Key="Item.SelectedActive.Background" Color="#3D26A0DA"/>
+        <SolidColorBrush x:Key="Item.SelectedActive.Border" Color="#FF26A0DA"/>
+        <SolidColorBrush x:Key="Item.SelectedInactive.Background" Color="#3DDADADA"/>
+        <SolidColorBrush x:Key="Item.SelectedInactive.Border" Color="#FFDADADA"/>
+        <Style x:Key="ListBoxItemContainerRoundedStyle" TargetType="{x:Type ListBoxItem}">
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Padding" Value="4,1"/>
+            <Setter Property="HorizontalContentAlignment" Value="{Binding HorizontalContentAlignment, RelativeSource={RelativeSource AncestorType={x:Type ItemsControl}}}"/>
+            <Setter Property="VerticalContentAlignment" Value="{Binding VerticalContentAlignment, RelativeSource={RelativeSource AncestorType={x:Type ItemsControl}}}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisual}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ListBoxItem}">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" SnapsToDevicePixels="true">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter Property="Background" TargetName="Bd" Value="{StaticResource Item.MouseOver.Background}"/>
+                                <Setter Property="BorderBrush" TargetName="Bd" Value="{StaticResource Item.MouseOver.Border}"/>
+                            </MultiTrigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="Selector.IsSelectionActive" Value="False"/>
+                                    <Condition Property="IsSelected" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter Property="Background" TargetName="Bd" Value="{StaticResource Item.SelectedInactive.Background}"/>
+                                <Setter Property="BorderBrush" TargetName="Bd" Value="{StaticResource Item.SelectedInactive.Border}"/>
+                            </MultiTrigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="Selector.IsSelectionActive" Value="True"/>
+                                    <Condition Property="IsSelected" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter Property="Background" TargetName="Bd" Value="{StaticResource Item.SelectedActive.Background}"/>
+                                <Setter Property="BorderBrush" TargetName="Bd" Value="{StaticResource Item.SelectedActive.Border}"/>
+                            </MultiTrigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="TextElement.Foreground" TargetName="Bd" Value="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="GridRoundStyle" TargetType="{x:Type Grid}">
+            <Setter Property="ClipToBounds" Value="True"/>
+        </Style>
+
+        <Style x:Key="RoundedButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#BF000000"/>
+            <Setter Property="Foreground" Value="#FFFAFAFA"/>
+            <Setter Property="BorderBrush" Value="#FF3F3F3F"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="5"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter x:Name="contentPresenter"
+                                              Focusable="False"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              Margin="{TemplateBinding Padding}"
+                                              RecognizesAccessKey="True"
+                                              SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" TargetName="border" Value="#3FFFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" TargetName="border" Value="#5FFFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Background" TargetName="border" Value="#FF2D2D2D"/>
+                                <Setter Property="Foreground" Value="#FF9D9D9D"/>
+                                <Setter Property="BorderBrush" TargetName="border" Value="#FF2D2D2D"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="RoundedComboBoxStyle" TargetType="{x:Type ComboBox}">
+            <Setter Property="Background" Value="#BF000000"/>
+            <Setter Property="Foreground" Value="#FFFAFAFA"/>
+            <Setter Property="BorderBrush" Value="#FF3F3F3F"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBox}">
+                        <Grid>
+                            <Border x:Name="border"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="5"
+                                    SnapsToDevicePixels="True">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="20"/>
+                                    </Grid.ColumnDefinitions>
+                                    <ContentPresenter Grid.Column="0"
+                                                      Content="{TemplateBinding SelectionBoxItem}"
+                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                      ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                                      Margin="10,5,5,5"
+                                                      IsHitTestVisible="False"/>
+                                    <Path Grid.Column="1"
+                                          Data="M 0 0 L 4 4 L 8 0 Z"
+                                          Fill="{TemplateBinding Foreground}"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Margin="0,0,5,0"/>
+                                    <ToggleButton Grid.Column="0" Grid.ColumnSpan="2"
+                                                  Background="Transparent"
+                                                  BorderBrush="Transparent"
+                                                  IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                                  ClickMode="Press"/>
+                                </Grid>
+                            </Border>
+                            <Popup x:Name="PART_Popup"
+                                   AllowsTransparency="True"
+                                   IsOpen="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}}"
+                                   Placement="Bottom"
+                                   PopupAnimation="Slide">
+                                <Border Background="#BF000000"
+                                        BorderBrush="#FF3F3F3F"
+                                        BorderThickness="1"
+                                        CornerRadius="5"
+                                        MinWidth="{TemplateBinding ActualWidth}"
+                                        MaxHeight="200">
+                                    <ScrollViewer>
+                                        <ItemsPresenter/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" TargetName="border" Value="#3FFFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Background" TargetName="border" Value="#FF2D2D2D"/>
+                                <Setter Property="Foreground" Value="#FF9D9D9D"/>
+                                <Setter Property="BorderBrush" TargetName="border" Value="#FF2D2D2D"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="ComboBoxItem">
+                        <Setter Property="Background" Value="Transparent"/>
+                        <Setter Property="Foreground" Value="#FFFAFAFA"/>
+                        <Setter Property="Padding" Value="10,5"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ComboBoxItem">
+                                    <Border x:Name="itemBorder"
+                                            Background="{TemplateBinding Background}"
+                                            Padding="{TemplateBinding Padding}"
+                                            SnapsToDevicePixels="True">
+                                        <ContentPresenter/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" TargetName="itemBorder" Value="#3FFFFFFF"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="AlwaysVisibleExpanderStyle" TargetType="{x:Type Expander}">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Expander}">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <!-- Footer background aligned with provided VHDX layout -->
+    <DockPanel LastChildFill="True">
+        <Menu DockPanel.Dock="Top" Background="#00222222" Foreground="White" Visibility="Hidden">
+            <MenuItem Header="_File" Foreground="{DynamicResource {x:Static SystemColors.AppWorkspaceBrushKey}}" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <MenuItem x:Name="SelectWimMenuItem"
+                          Header="_Select WIM..."
+                          Click="SelectWimMenuItem_Click" Foreground="{DynamicResource {x:Static SystemColors.ActiveBorderBrushKey}}"/>
+                <Separator/>
+                <MenuItem x:Name="ExitMenuItem"
+                          Header="E_xit"
+                          />
+            </MenuItem>
+        </Menu>
+        <Border Background="#BF000000"
+                Height="86"
+                Width="902"
+                CornerRadius="5,5,0,0"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Bottom"
+                DockPanel.Dock="Bottom">
+            <Canvas x:Name="FooterGrid"
+                    Width="902"
+                    Height="86"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Bottom">
+                <TextBlock x:Name="HeadingTextBlock"
+                           Foreground="#FFCCCCCC"
+                           FontSize="22"
+                           Canvas.Left="31"
+                           Canvas.Top="14"/>
+                <TextBlock x:Name="CopyrightTextBlock"
+                           Foreground="#CCC"
+                           TextWrapping="Wrap"
+                           Canvas.Left="31"
+                           Canvas.Top="48"/>
+                <Ellipse x:Name="DismActivityLight"
+                         Width="18" Height="18"
+                         Fill="#333"
+                         Stroke="#555"
+                         StrokeThickness="1"
+                         Cursor="Hand"
+                         Canvas.Right="20"
+                         Canvas.Top="34"
+                         ToolTip="DISM Activity"/>
+
+                <!-- RIGHT‑ALIGNED PROGRESS PANEL -->
+                <StackPanel x:Name="ProgressPanel"
+                            Orientation="Vertical"
+                            Canvas.Right="50"
+                            Canvas.Top="16"
+                            Width="230">
+                    <TextBlock x:Name="MountSizeProgressText"
+                               FontSize="22"
+                               Foreground="#FFE2E2E2"
+                               TextAlignment="Right"
+                               TextTrimming="None"
+                               TextWrapping="NoWrap"/>
+                    <TextBlock x:Name="MountSizeProgressTextDetail"
+                               Margin="0,4,0,0"
+                               Foreground="#FFE2E2E2"
+                               TextAlignment="Right"
+                               TextTrimming="CharacterEllipsis"
+                               TextWrapping="NoWrap"
+                               Width="230"/>
+                </StackPanel>
+            </Canvas>
+        </Border>
+
+        <Grid x:Name="MainGrid" Margin="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition/>
+            </Grid.ColumnDefinitions>
+
+            <Expander x:Name="Settings"
+                      Style="{StaticResource AlwaysVisibleExpanderStyle}"
+                      HorizontalAlignment="Left"
+                      Width="262"
+                      VerticalAlignment="Top"
+                      UseLayoutRounding="True"
+                      IsExpanded="True">
+                <Border Background="#99000000" 
+                        CornerRadius="5" 
+                        Width="215" 
+                        Margin="0,23,0,-617"
+                        HorizontalAlignment="Center"
+                        SnapsToDevicePixels="True" VerticalAlignment="Top" Height="550">
+                    <Grid Style="{DynamicResource GridRoundStyle}" x:Name="SettingsGrid" Height="600" Width="215">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition/>
+                        </Grid.ColumnDefinitions>
+                        <Label Content="Select WIM File" HorizontalAlignment="Left" Margin="10,0,0,0" Width="140" Foreground="#FFE2E2E2" VerticalAlignment="Top" Height="26"/>
+                        <Button x:Name="SelectWimButton"
+                                Content="Browse..."
+                                Click="SelectWimMenuItem_Click"
+                                Style="{StaticResource RoundedButtonStyle}"
+                                Margin="10,26,10,0"
+                                Height="30"
+                                VerticalAlignment="Top" 
+                                UseLayoutRounding="True" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
+
+                        <StackPanel x:Name="WinPEActionsPanel"
+                                    Margin="10,288,10,0"
+                                    VerticalAlignment="Top"
+                                    HorizontalAlignment="Center"
+                                    Width="195">
+                            <Button x:Name="_CreateWinPE"
+                                    Content="Create WinPE"
+                                    Click="CreateWinPE_Click"
+                                    Style="{StaticResource RoundedButtonStyle}"
+                                    Height="30"
+                                    UseLayoutRounding="True"
+                                    HorizontalContentAlignment="Center"
+                                    VerticalContentAlignment="Center"/>
+                            <TextBlock x:Name="WinPEStatusText"
+                                       Margin="0,8,0,0"
+                                       Foreground="#FF32CD32"
+                                       Visibility="Collapsed"
+                                       TextAlignment="Center"
+                                       TextWrapping="Wrap"/>
+                            <Button x:Name="CreateUsbButton"
+                                    Content="Create USB"
+                                    Click="CreateUsbButton_Click"
+                                    Style="{StaticResource RoundedButtonStyle}"
+                                    Margin="0,8,0,0"
+                                    Height="30"
+                                    UseLayoutRounding="True"
+                                    HorizontalContentAlignment="Center"
+                                    VerticalContentAlignment="Center"
+                                    Visibility="Collapsed"/>
+                        </StackPanel>
+                        <TextBlock x:Name="TitleLabel" 
+               Foreground="White"
+ VerticalAlignment="Top"
+ Margin="0,61,0,0" 
+ Height="89"
+ TextWrapping="Wrap" HorizontalAlignment="Center" RenderTransformOrigin="0.5,0.5" Width="195">
+                            <TextBlock.RenderTransform>
+                                <TransformGroup>
+                                    <ScaleTransform ScaleX="1"/>
+                                    <SkewTransform/>
+                                    <RotateTransform/>
+                                    <TranslateTransform/>
+                                </TransformGroup>
+                            </TextBlock.RenderTransform>
+                        </TextBlock>
+                        <Label Content="WinPE" HorizontalAlignment="Left" Margin="10,255,0,0" Width="140" Foreground="#FFE2E2E2" VerticalAlignment="Top" Height="26"/>
+                        <Button x:Name="ClearButton"
+        Content="Clear"
+        Click="ClearButton_Click"
+        Style="{StaticResource RoundedButtonStyle}"
+        Margin="10,495,10,0"
+        Height="30"
+        Width="195"
+        HorizontalAlignment="Center"
+        VerticalAlignment="Top"
+        ToolTip="Clear current WIM selection"/>
+                        <Button x:Name="_CreateWinPE_Copy"
+                            Content="Create WinVOS"
+                            Click="CreateWinPE_Click"
+                            Style="{StaticResource RoundedButtonStyle}"
+                            Margin="10,323,10,0" 
+                            UseLayoutRounding="True" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Height="30" VerticalAlignment="Top"
+                            Visibility="Collapsed"/>
+                    </Grid>
+                </Border>
+            </Expander>
+
+            <ListBox ItemContainerStyle="{DynamicResource ListBoxItemContainerRoundedStyle}" Style="{DynamicResource ListBoxRoundedStyle}" x:Name="WimImagesListBox"
+                     Background="#BF000000"
+                     Foreground="#FFFAFAFA"
+                     BorderThickness="1"
+                     SelectionMode="Multiple"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto" HorizontalAlignment="Left" OpacityMask="Black" Margin="269,23,0,0" VerticalAlignment="Top" Height="552" Width="340" BorderBrush="#FF3F3F3F" Visibility="Collapsed" Padding="4,4,4,4"/>
+
+            <Button x:Name="MountActionButton"
+                    Content="Mount Image"
+                    Click="MountActionButton_Click"
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,23,0,0"
+                    MinWidth="75.72" 
+                    MinHeight="32"
+                    Height="32"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top" Width="125" Visibility="Collapsed"/>
+
+            <Button x:Name="UnmountActionButton"
+                    Content="Unmount Image"
+                    Click="UnmountActionButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,542,0,0" 
+                    Width="125" 
+                    Height="32" 
+                    HorizontalAlignment="Left" 
+                    VerticalAlignment="Top" Visibility="Collapsed"/>
+
+            <Button x:Name="ExportImageButton"
+                    Content="Export Image"
+                    Click="ExportImageButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,122,0,0" 
+                    Width="125" 
+                    Height="32" 
+                    HorizontalAlignment="Left" 
+                    VerticalAlignment="Top" Visibility="Collapsed"/>
+
+            <Button x:Name="ExportDriversButton"
+                    Content="Export Drivers"
+                    Click="ExportDriversButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,159,0,0" 
+                    Width="125" 
+                    Height="32" 
+                    HorizontalAlignment="Left" 
+                    VerticalAlignment="Top" Visibility="Collapsed"/>
+
+            <Button x:Name="AddDriversButton"
+                    Content="Add Drivers"
+                    Click="AddDriversButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,196,0,0" 
+                    Width="125" 
+                    Height="32" 
+                    HorizontalAlignment="Left" 
+                    VerticalAlignment="Top" Visibility="Collapsed"/>
+
+            <Button x:Name="ApplyUpdatesButton"
+                    Content="Apply Updates"
+                    Click="ApplyUpdatesButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,233,0,0" 
+                    Width="125" 
+                    Height="32" 
+                    HorizontalAlignment="Left" 
+                    VerticalAlignment="Top" Visibility="Collapsed"/>
+
+            <ListBox ItemContainerStyle="{DynamicResource ListBoxItemContainerRoundedStyle}" 
+                     Style="{DynamicResource ListBoxRoundedStyle}" 
+                     x:Name="Log_read_out"
+                     Background="#BF000000"
+                     Foreground="#FFFAFAFA"
+                     BorderThickness="1"
+                     SelectionMode="Single"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     Padding="4" 
+                     HorizontalAlignment="Left" 
+                     OpacityMask="Black" 
+                     Margin="748,23,0,0" 
+                     VerticalAlignment="Top" 
+                     Height="552" 
+                     BorderBrush="#FF3F3F3F" MinHeight="466" MinWidth="342" Visibility="Collapsed"/>
+
+            <Button x:Name="SelectAllDriversButton" 
+                    Content="Select All"
+                    Click="SelectAllDriversButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="748,580,0,0"
+                    Width="100"
+                    Height="32"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top" Visibility="Collapsed"/>
+
+            <Button x:Name="StartDriverProcessButton" 
+                    Content="Start"
+                    Click="StartDriverProcessButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="853,579,0,0"
+                    Width="100"
+                    Height="32"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top" Visibility="Collapsed"/>
+
+            <Button x:Name="CancelDriverProcessButton" 
+                    Content="Cancel"
+                    Click="CancelDriverProcessButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="958,579,0,0"
+                    Width="100"
+                    Height="32"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top" Visibility="Collapsed"/>
+
+            <Button x:Name="SelectAllUpdatesButton" 
+                    Content="Select All"
+                    Click="SelectAllUpdatesButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="748,580,0,0"
+                    Height="32"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top" Width="100" Visibility="Collapsed"/>
+
+            <Button x:Name="StartUpdateProcessButton" 
+                    Content="Start"
+                    Click="StartUpdateProcessButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="853,579,0,0"
+                    Height="32"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top" Width="100" Visibility="Collapsed"/>
+
+            <Button x:Name="CancelUpdateProcessButton" 
+                    Content="Cancel"
+                    Click="CancelUpdateProcessButton_Click" 
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="958,579,0,0"
+                    Height="32"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Top" Width="100" Visibility="Collapsed"/>
+
+            <Button x:Name="OpenMountFolderButton"
+                    Content="Open Mount Folder"
+                    Click="OpenMountFolderButton_Click"
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,505,0,0" 
+                    Width="125" 
+                    Height="32" 
+                    HorizontalAlignment="Left" 
+                    VerticalAlignment="Top"
+                    ToolTip="Open mount directory in Explorer" Visibility="Collapsed"/>
+
+            <Label x:Name="cmdrun" Content="" Margin="448,-23,3,644" d:LayoutOverrides="HorizontalAlignment" Foreground="White"/>
+
+            <Button x:Name="WinPENextButton" Content="Next" Width="125" Height="32"
+                    Click="WinPENextButton_Click"
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,390,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Visibility="Collapsed"/>
+            <Button x:Name="WinPEFinishButton" Content="Finish" Height="32"
+                    Click="WinPEFinishButton_Click"
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,390,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Width="125" Visibility="Collapsed"/>
+            <Button x:Name="WinPECancelButton" Content="Cancel" Width="125" Height="32"
+                    Click="WinPECancelButton_Click"
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,427,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Visibility="Collapsed"/>
+            <Button x:Name="DeleteEntryButton" Content="Delete" Width="125" Height="32"
+                    Click="DeleteEntryButton_Click"
+                    Style="{StaticResource RoundedButtonStyle}"
+                    Margin="616,464,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Visibility="Collapsed"/>
+
+            <!-- WinPE Language Selector -->
+            <Label x:Name="WinPELanguageLabel"
+                   Content="Language:"
+                   Foreground="#FFE2E2E2"
+                   Margin="616,29,0,0"
+                   Width="125"
+                   Height="26"
+                   HorizontalAlignment="Left"
+                   VerticalAlignment="Top"
+                   Visibility="Collapsed"
+                   ToolTip="{x:Null}"/>
+            <ComboBox x:Name="WinPELanguageComboBox"
+                      Style="{StaticResource RoundedComboBoxStyle}"
+                      Margin="616,60,0,0"
+                      Width="125"
+                      Height="32"
+                      HorizontalAlignment="Left"
+                      VerticalAlignment="Top"
+                      Visibility="Collapsed"
+                      SelectionChanged="WinPELanguageComboBox_SelectionChanged"
+                      ToolTip="{x:Null}" Foreground="White" Background="#99000000" BorderBrush="#99FFFFFF" UseLayoutRounding="True"/>
+        </Grid>
+    </DockPanel>
+</Window>

@@ -1,0 +1,147 @@
+<Window x:Class="AdkInstallationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Windows ADK Required"
+        Height="280"
+        Width="550"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#1E1E1E"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        BorderBrush="#007ACC"
+        BorderThickness="1">
+
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="15,8"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="2">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#3E3E42"/>
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="#007ACC"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <!-- Title Bar -->
+        <Grid Height="32" VerticalAlignment="Top" Background="#2D2D30" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0">
+                <Image Source="pack://application:,,,/Resources/app-icon.ico" Width="16" Height="16" Margin="0,0,8,0" RenderOptions.BitmapScalingMode="HighQuality"/>
+                <TextBlock Text="Windows ADK Required" Foreground="White" FontSize="12" VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <Button Content="✕" 
+                    Width="32" 
+                    Height="32" 
+                    HorizontalAlignment="Right"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    Foreground="White"
+                    FontSize="16"
+                    Click="CloseButton_Click">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#E81123"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+        </Grid>
+
+        <!-- Main Content -->
+        <Grid Margin="0,32,0,-12">
+            <StackPanel Margin="30,20" VerticalAlignment="Center">
+                <!-- Icon and Message -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,20">
+                    <TextBlock Text="⚠" 
+                               FontSize="48" 
+                               Foreground="#FFA500" 
+                               Margin="0,0,20,0"
+                               VerticalAlignment="Top"/>
+                    <StackPanel>
+                        <TextBlock Text="Windows ADK PE Add-on Not Found" 
+                                   FontSize="16" 
+                                   FontWeight="Bold" 
+                                   Foreground="White" 
+                                   Margin="0,0,0,10"/>
+						<TextBlock Text="The Windows Assessment and Deployment Kit (ADK) with the WinPE add-on is required to create WinPE images."
+                                   FontSize="13"
+                                   Foreground="#CCCCCC"
+                                   TextWrapping="Wrap"
+                                   LineHeight="20"
+                                   Width="333"/>
+						<TextBlock Text="Would you like to install it now using Windows Package Manager (winget)?"
+                                   FontSize="13"
+                                   Foreground="#CCCCCC"
+                                   TextWrapping="Wrap"
+                                   LineHeight="20" Width="333"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Progress indicator (hidden by default) -->
+                <StackPanel x:Name="ProgressPanel" Visibility="Collapsed" Margin="0,10,0,20">
+                    <TextBlock x:Name="ProgressText" 
+                               Text="Installing Windows ADK PE Add-on..." 
+                               FontSize="12" 
+                               Foreground="#007ACC" 
+                               Margin="0,0,0,8"/>
+                    <ProgressBar x:Name="InstallProgress" 
+                                 Height="4" 
+                                 IsIndeterminate="True" 
+                                 Background="#3F3F46" 
+                                 Foreground="#007ACC"/>
+                </StackPanel>
+
+                <!-- Buttons -->
+                <StackPanel x:Name="ButtonPanel" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                    <Button Content="Cancel" 
+                            Width="100" 
+                            Margin="0,0,10,0" 
+                            Click="CancelButton_Click"
+                            x:Name="CancelBtn"/>
+                    <Button Content="Install ADK" 
+                            Width="120" 
+                            Background="#007ACC" 
+                            Click="InstallButton_Click"
+                            x:Name="InstallBtn"/>
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
