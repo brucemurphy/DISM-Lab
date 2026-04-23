@@ -13,7 +13,6 @@ Imports System.Windows.Interop
 Imports System.Windows.Media.Effects
 Imports System.Windows.Threading
 Imports Microsoft.Win32
-Imports WinForms = System.Windows.Forms
 'start
 Class MainWindow
     Private Shared ReadOnly httpClient As New HttpClient()
@@ -222,18 +221,18 @@ Class MainWindow
 
         ' Subscribe to status updates
         AddHandler adkDialog.StatusChanged, Sub(header As String, detail As String)
-                                                ' Update main window status displays
-                                                Dispatcher.InvokeAsync(Sub()
-                                                                           If MountSizeProgressText IsNot Nothing Then
-                                                                               MountSizeProgressText.Text = header
-                                                                               MountSizeProgressText.Visibility = Visibility.Visible
-                                                                           End If
-                                                                           If MountSizeProgressTextDetail IsNot Nothing Then
-                                                                               MountSizeProgressTextDetail.Text = detail
-                                                                               MountSizeProgressTextDetail.Visibility = Visibility.Visible
-                                                                           End If
-                                                                       End Sub)
-                                            End Sub
+                                                 ' Update main window status displays
+                                                 Dispatcher.InvokeAsync(Sub()
+                                                                            If MountSizeProgressText IsNot Nothing Then
+                                                                                MountSizeProgressText.Text = header
+                                                                                MountSizeProgressText.Visibility = Visibility.Visible
+                                                                            End If
+                                                                            If MountSizeProgressTextDetail IsNot Nothing Then
+                                                                                MountSizeProgressTextDetail.Text = detail
+                                                                                MountSizeProgressTextDetail.Visibility = Visibility.Visible
+                                                                            End If
+                                                                        End Sub)
+                                             End Sub
 
         ' ✅ Subscribe to DISM indicator events
         AddHandler adkDialog.DismIndicatorStart, Sub() StartDismIndicator()
@@ -2361,16 +2360,19 @@ Class MainWindow
         End If
 
         ' Show folder dialog for driver source
-        Dim folderDialog As New WinForms.FolderBrowserDialog() With {
-            .Description = "Select folder containing drivers (.inf files)",
-            .ShowNewFolderButton = True
+        Dim folderDialog As New SaveFileDialog() With {
+            .Title = "Select folder containing drivers (.inf files)",
+            .FileName = "SelectFolder",
+            .Filter = "Folder Selection|*.this.directory",
+            .CheckFileExists = False,
+            .CheckPathExists = True
         }
 
-        If folderDialog.ShowDialog() <> WinForms.DialogResult.OK Then
+        If folderDialog.ShowDialog() <> True Then
             Return
         End If
 
-        Dim driverSourcePath = folderDialog.SelectedPath
+        Dim driverSourcePath = Path.GetDirectoryName(folderDialog.FileName)
 
         If String.IsNullOrWhiteSpace(driverSourcePath) OrElse Not Directory.Exists(driverSourcePath) Then
             MessageBox.Show("Invalid driver source path selected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
@@ -2681,17 +2683,17 @@ Class MainWindow
 
             ' Subscribe to status updates for real installation
             AddHandler adkDialog.StatusChanged, Sub(header As String, detail As String)
-                                                    Dispatcher.InvokeAsync(Sub()
-                                                                               If MountSizeProgressText IsNot Nothing Then
-                                                                                   MountSizeProgressText.Text = header
-                                                                                   MountSizeProgressText.Visibility = Visibility.Visible
-                                                                               End If
-                                                                               If MountSizeProgressTextDetail IsNot Nothing Then
-                                                                                   MountSizeProgressTextDetail.Text = detail
-                                                                                   MountSizeProgressTextDetail.Visibility = Visibility.Visible
-                                                                               End If
-                                                                           End Sub)
-                                                End Sub
+                                                     Dispatcher.InvokeAsync(Sub()
+                                                                                If MountSizeProgressText IsNot Nothing Then
+                                                                                    MountSizeProgressText.Text = header
+                                                                                    MountSizeProgressText.Visibility = Visibility.Visible
+                                                                                End If
+                                                                                If MountSizeProgressTextDetail IsNot Nothing Then
+                                                                                    MountSizeProgressTextDetail.Text = detail
+                                                                                    MountSizeProgressTextDetail.Visibility = Visibility.Visible
+                                                                                End If
+                                                                            End Sub)
+                                                 End Sub
 
             ' ✅ Subscribe to DISM indicator events
             AddHandler adkDialog.DismIndicatorStart, Sub() StartDismIndicator()
@@ -3466,16 +3468,19 @@ Class MainWindow
         End If
 
         ' Show folder dialog for updates source
-        Dim folderDialog As New WinForms.FolderBrowserDialog() With {
-            .Description = "Select folder containing updates (.msu/.cab files)",
-            .ShowNewFolderButton = True
-        }
+        Dim folderDialog As New SaveFileDialog() With {
+        .Title = "Select folder containing updates (.msu/.cab files)",
+        .FileName = "SelectFolder",
+        .Filter = "Folder Selection|*.this.directory",
+        .CheckFileExists = False,
+        .CheckPathExists = True
+    }
 
-        If folderDialog.ShowDialog() <> WinForms.DialogResult.OK Then
+        If folderDialog.ShowDialog() <> True Then
             Return
         End If
 
-        Dim updatesSourcePath = folderDialog.SelectedPath
+        Dim updatesSourcePath = Path.GetDirectoryName(folderDialog.FileName)
 
         If String.IsNullOrWhiteSpace(updatesSourcePath) OrElse Not Directory.Exists(updatesSourcePath) Then
             MessageBox.Show("Invalid updates source path selected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
@@ -4543,16 +4548,19 @@ Class MainWindow
         End If
 
         ' Show folder dialog
-        Dim folderDialog As New WinForms.FolderBrowserDialog() With {
-            .Description = "Select destination folder for exported drivers",
-            .ShowNewFolderButton = True
+        Dim folderDialog As New SaveFileDialog() With {
+            .Title = "Select destination folder for exported drivers",
+            .FileName = "SelectFolder",
+            .Filter = "Folder Selection|*.this.directory",
+            .CheckFileExists = False,
+            .CheckPathExists = True
         }
 
-        If folderDialog.ShowDialog() <> WinForms.DialogResult.OK Then
+        If folderDialog.ShowDialog() <> True Then
             Return
         End If
 
-        Dim destinationPath = folderDialog.SelectedPath
+        Dim destinationPath = Path.GetDirectoryName(folderDialog.FileName)
 
         If String.IsNullOrWhiteSpace(destinationPath) Then
             MessageBox.Show("Invalid destination path selected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
@@ -4766,118 +4774,6 @@ Class MainWindow
             CreateUsbButton.IsEnabled = hasManifest AndAlso _isWinPeMountDirEmpty AndAlso Not _operationInProgress
         End If
     End Sub
-
-    ' ==================== CAPTURE SYSTEM DRIVERS ====================
-
-    Private Async Sub CaptureSystemDriversButton_Click(sender As Object, e As RoutedEventArgs)
-        ' Save ALL current button states before operation (standalone operation that doesn't affect WIM/WinPE)
-        Dim clearButtonWasEnabled = If(ClearButton IsNot Nothing, ClearButton.IsEnabled, False)
-        Dim createWinPeWasEnabled = If(_CreateWinPE IsNot Nothing, _CreateWinPE.IsEnabled, False)
-        Dim createUsbWasEnabled = If(CreateUsbButton IsNot Nothing, CreateUsbButton.IsEnabled, False)
-
-        DisableAllControls()
-
-        Try
-            Await CaptureSystemDriversAsync()
-        Finally
-            EnableAllControls()
-
-            ' Force restore button states AFTER EnableAllControls completes
-            ' This ensures they're not overridden by UpdateWinPEUiState or RestoreMountButtonState
-            Dispatcher.InvokeAsync(Sub()
-                                       If ClearButton IsNot Nothing Then
-                                           ClearButton.IsEnabled = clearButtonWasEnabled
-                                       End If
-                                       If _CreateWinPE IsNot Nothing Then
-                                           _CreateWinPE.IsEnabled = createWinPeWasEnabled
-                                       End If
-                                       If CreateUsbButton IsNot Nothing Then
-                                           CreateUsbButton.IsEnabled = createUsbWasEnabled
-                                       End If
-                                   End Sub, DispatcherPriority.Loaded)
-        End Try
-    End Sub
-
-    Private Async Function CaptureSystemDriversAsync() As Task
-        If Not IsAdministrator() Then
-            MessageBox.Show("Administrator privileges required to capture system drivers.", "DISM", MessageBoxButton.OK, MessageBoxImage.Warning)
-            Return
-        End If
-
-        ' Show proper folder browser dialog
-        Dim folderDialog As New WinForms.FolderBrowserDialog() With {
-            .Description = "Select destination folder for captured system drivers",
-            .ShowNewFolderButton = True,
-            .SelectedPath = "C:\Drivers"
-        }
-
-        If folderDialog.ShowDialog() <> WinForms.DialogResult.OK Then
-            Return
-        End If
-
-        Dim destinationPath = folderDialog.SelectedPath
-
-        If String.IsNullOrWhiteSpace(destinationPath) Then
-            MessageBox.Show("Invalid destination path selected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
-            Return
-        End If
-
-        ' Create destination folder if it doesn't exist
-        Try
-            If Not Directory.Exists(destinationPath) Then
-                Directory.CreateDirectory(destinationPath)
-            End If
-        Catch ex As Exception
-            MessageBox.Show($"Failed to create destination folder:{Environment.NewLine}{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
-            Return
-        End Try
-
-        Try
-            ' Update progress UI
-            If MountSizeProgressText IsNot Nothing Then
-                MountSizeProgressText.Text = "Scanning..."
-                MountSizeProgressTextDetail.Text = "Capturing system drivers"
-                MountSizeProgressText.Visibility = Visibility.Visible
-                MountSizeProgressTextDetail.Visibility = Visibility.Visible
-            End If
-
-            ' Run DISM to export drivers from the online system
-            Dim args = $"/Online /Export-Driver /Destination:""{destinationPath}"""
-            Dim result = Await RunDismSimpleAsync(args)
-
-            If result.ExitCode = 0 Then
-                ' Success
-                If MountSizeProgressText IsNot Nothing Then
-                    MountSizeProgressText.Text = "100%"
-                    MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
-                    MountSizeProgressTextDetail.Text = "System driver capture complete"
-                End If
-
-                Await Task.Delay(3000)
-
-                If MountSizeProgressText IsNot Nothing Then
-                    MountSizeProgressText.Foreground = New SolidColorBrush(Color.FromRgb(&HCC, &HCC, &HCC))
-                End If
-
-                ResetMountProgressUi()
-
-                MessageBox.Show($"System drivers successfully captured to:{Environment.NewLine}{destinationPath}",
-                               "Success",
-                               MessageBoxButton.OK,
-                               MessageBoxImage.Information)
-            Else
-                MessageBox.Show($"System driver capture failed (code {result.ExitCode}):{Environment.NewLine}{result.StdErr}",
-                   "DISM",
-                   MessageBoxButton.OK,
-                   MessageBoxImage.Error)
-                ResetMountProgressUi()
-            End If
-
-        Catch ex As Exception
-            MessageBox.Show($"Error during system driver capture:{Environment.NewLine}{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error)
-            ResetMountProgressUi()
-        End Try
-    End Function
 
     <DllImport("dwmapi.dll", PreserveSig:=True)>
     Private Shared Function DwmSetWindowAttribute(hwnd As IntPtr, attr As Integer, ByRef attrValue As Integer, attrSize As Integer) As Integer

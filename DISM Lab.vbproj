@@ -29,6 +29,10 @@
     <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
   <ItemGroup>
     <Resource Include="DISMLab.png" />
     <Resource Include="SplashLab.png">

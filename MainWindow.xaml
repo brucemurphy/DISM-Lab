@@ -425,6 +425,16 @@
                             </TextBlock.RenderTransform>
                         </TextBlock>
                         <Label Content="WinPE" HorizontalAlignment="Left" Margin="10,255,0,0" Width="140" Foreground="#FFE2E2E2" VerticalAlignment="Top" Height="26"/>
+                        <Button x:Name="CaptureSystemDriversButton"
+        Content="Capture System Drivers"
+        Click="CaptureSystemDriversButton_Click"
+        Style="{StaticResource RoundedButtonStyle}"
+        Margin="10,460,10,0"
+        Height="30"
+        Width="195"
+        HorizontalAlignment="Center"
+        VerticalAlignment="Top"
+        ToolTip="Export all drivers from the running system"/>
                         <Button x:Name="ClearButton"
         Content="Clear"
         Click="ClearButton_Click"
