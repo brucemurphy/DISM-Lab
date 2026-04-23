@@ -1,50 +1,70 @@
 # DISM Lab
 
-## Overview
-DISM Lab is a WPF front end for the Deployment Image Servicing and Management (DISM) tooling. It targets `net8.0-windows` and focuses on day-to-day image servicing tasks: inspecting indexes, mounting WIMs with live disk-usage tracking, adding or exporting drivers, applying MSU/CAB updates, exporting images, and preparing WinPE boot media or USB keys. The UI is optimized for touch-friendly kiosk deployments with a dark theme, live Bing wallpaper, and clear progress readouts.
+## What is DISM Lab?
+DISM Lab is a Windows application that makes it easy to work with Windows Image (WIM) files and create Windows PE boot media. Whether you need to customize Windows installation images, add drivers, apply updates, or create bootable USB drives, DISM Lab provides a simple visual interface to get the job done.
 
-## Feature Highlights
-- **WIM exploration** – enumerate indexes, descriptions, sizes, and architectures directly from `dism.exe /Get-WimInfo` output.
-- **Mount management** – one-click mount/unmount with automatic mount folder hygiene, debounced size monitoring, and activity light feedback.
-- **Driver + update servicing** – pick `.inf`, `.cab`, or `.msu` files via multi-select UX, log every package result, and optionally remount existing sessions.
-- **Image export** – export selected indexes to new WIMs with adaptive progress tracking and stall detection.
-- **Driver export** – extract drivers from mounted images into a chosen folder while keeping the primary image read-only.
-- **WinPE workflow** – guided wizard to select architecture/optional components, run `copype`, mount `boot.wim`, add packages, and persist a manifest for later runs.
-- **USB creation** – enumerate removable disks, repartition with DiskPart, copy WinPE media, and expose boot/data volumes (default `P:` + `I:`).
-- **Workspace hygiene** – automatic log storage under `%LOCALAPPDATA%\DISM_Lab`, manifest watching with `FileSystemWatcher`, and defensive cleanup on shutdown.
+## What Can You Do With It?
 
-## Requirements
-- Windows 10/11 with DISM available on the path.
-- .NET 8.0 SDK (`dotnet --version` ≥ 8.0).
-- Administrator rights (the app relaunches elevated if needed).
-- Windows ADK + WinPE add-ons when running the WinPE wizard (provides `copype.cmd` and optional component CABs).
-- Network access (optional) for daily Bing wallpaper downloads.
+### Working with Windows Images
+- **View WIM Contents** - Open any Windows image file and see all the different versions (indexes) it contains, including their names, descriptions, and sizes
+- **Mount Images** - Mount a Windows image to your computer so you can modify it, with live progress tracking showing how much data has been copied
+- **Unmount Images** - Safely unmount images with the option to save or discard your changes
+- **Export Images** - Extract specific Windows versions from a WIM file into a new standalone image file
 
-## Build & Run
-```bash
-# Restore, build, and launch
- dotnet restore
- dotnet build
- dotnet run --project "DISM Lab.vbproj"
-```
-Running outside Visual Studio still requires elevation; use `Run as administrator` or accept the UAC prompt triggered on startup.
+### Managing Drivers
+- **Add Drivers to Images** - Select a folder containing driver files and add them to your Windows image - great for pre-loading hardware drivers
+- **Export Drivers from Images** - Pull all drivers out of a Windows image and save them to a folder for backup or reuse
+- **Capture System Drivers** - Export all drivers currently installed on your running computer to a folder - perfect for creating driver backup collections
 
-## Typical Workflows
-- **Inspect + mount a WIM**: `Select WIM → choose index → Mount Image`. The footer progress module shows bytes copied vs. total, while the DISM activity light reflects process state. Use `Open Mount Folder` to browse the mount root.
-- **Add drivers or updates**: select the image index, click `Add Drivers` or `Apply Updates`, pick a folder, choose packages from the multi-select list (`Select All`, `Start`, `Cancel` controls), then let DISM handle `/Add-Driver` or `/Add-Package`. Logs are saved to `Mount\DISM_Lab\Logs\labpe.log` and rendered in `Log_read_out`.
-- **Export an image**: select an index, click `Export Image`, provide a destination `.wim`, and monitor the adaptive progress display. Exports reuse existing mount size metadata for better estimates.
-- **Create WinPE media**: `Create WinPE → pick architecture → optionally add components → Finish`. The app locates `copype.cmd`, sets up the workspace, adds packages, stores `labpe-manifest.json`, and enables `Create USB` once media exists.
-- **Provision a USB stick**: click `Create USB`, pick a removable disk from `DiskSelectionWindow`, confirm destructive actions, and wait while DiskPart, file copy, and readiness checks complete. The boot volume is labeled per architecture (e.g., `WinPE_AMD64`).
+### Applying Updates
+- **Apply Windows Updates** - Select .msu or .cab update files and apply them to your Windows image, so your installation media is already up-to-date
 
-## Project Layout
-- `MainWindow.xaml` / `MainWindow.xaml.vb` – primary UI, DISM orchestration, WinPE wizard, progress logic, disk prep, and log handling.
-- `DiskSelectionWindow.xaml(.vb)` – modal picker for removable disks with refresh-on-demand support.
-- `DiskInfo.vb` – POCO describing enumerated disks.
-- `DismProgressWindow.xaml(.vb)` – auxiliary window for streaming `dism.exe` output and progress parsing (e.g., `/Get-WimInfo`).
-- `DISM Lab.vbproj` – .NET 8 WPF project configuration, references, and packaging metadata.
+### Creating Windows PE Boot Media
+- **Build WinPE Images** - Create a lightweight Windows PE boot environment by choosing your architecture (x64 or arm64) and optional components like PowerShell, WMI, or networking tools
+- **Create Bootable USB Drives** - Turn any USB drive into a bootable Windows PE recovery drive with separate partitions for the boot files and your Windows images
 
-## Troubleshooting
-- **copype not found** – install the Windows ADK + WinPE add-ons; verify `copype.cmd` is under `C:\Program Files (x86)\Windows Kits`.
-- **Mount folder not empty** – the app offers `/Unmount-WIM /Discard` followed by `/Cleanup-Mountpoints`; accept the prompt or manually clean `C:\Mount`.
-- **USB letters in use** – release `P:` or `I:` before launching USB creation, or adjust constants in `MainWindow.xaml.vb` if your lab standard differs.
-- **Log viewer empty** – confirm the operation wrote `labpe.log` beneath the mount path; some read-only actions (e.g., driver export) skip log generation on purpose.
+## How to Use It
+
+### Basic Workflow
+1. **Select a WIM file** from the File menu
+2. **Choose what you want to do** - the available buttons change based on whether you've selected an image or mounted one
+3. **Follow the prompts** - each operation guides you through folder selection or confirmation dialogs
+4. **Watch the progress** - a live indicator shows you exactly what's happening and how much is complete
+
+### Common Tasks
+
+**To add drivers to a Windows installation:**
+1. Select your WIM file
+2. Choose the Windows version you want to modify
+3. Click "Add Drivers"
+4. Select the folder with your driver files
+5. Choose which drivers to include
+6. Wait for them to be added - you'll see a log of what was successful
+
+**To create a Windows PE USB drive:**
+1. Click "Create WinPE"
+2. Choose your architecture (x64 or arm64)
+3. Optionally add components like PowerShell
+4. Click Finish and wait for it to build
+5. Click "Create USB"
+6. Select your USB drive (WARNING: this will erase everything on it!)
+7. Wait for the files to copy
+
+**To backup your computer's drivers:**
+1. Click "Capture System Drivers"
+2. Choose or type the destination folder
+3. Wait for all drivers to be exported
+4. Done! You now have a complete driver backup
+
+## What You Need
+- Windows 10 or Windows 11
+- Administrator privileges (the app will ask to restart as admin if needed)
+- For WinPE creation: Windows ADK and Windows PE add-on installed
+- Internet connection (optional - for the Bing wallpaper background)
+
+## Tips
+- The green activity light shows when DISM is working
+- Progress percentages appear at the bottom during long operations
+- Mount a WIM file to see operation logs in the lower panel
+- The app automatically cleans up mount folders if they're not empty at startup
+- All operations can be cancelled if something goes wrong
