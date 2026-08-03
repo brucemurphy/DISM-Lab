@@ -17,6 +17,9 @@ Imports WinForms = System.Windows.Forms
 'start
 Class MainWindow
     Private Shared ReadOnly httpClient As New HttpClient()
+    Private ReadOnly _updateService As New GitHubUpdateService()
+    Private ReadOnly _userSettings As UserSettings = UserSettingsStore.Load()
+    Private _updateCheckInProgress As Boolean
     Private _isMounted As Boolean = False
     Private _wimPath As String = Nothing
     Private Const BaseTitle As String = "DISM Lab"
@@ -182,7 +185,9 @@ Class MainWindow
     End Class
 
     Private Async Sub MainWindow_Loaded(sender As Object, e As RoutedEventArgs) Handles Me.Loaded
-        Me.Title = BaseTitle
+        Me.Title = $"{BaseTitle} v{_updateService.GetCurrentVersion()}"
+        SettingsVersionText.Text = $"Current version: {_updateService.GetCurrentVersion()}"
+        RealTimeModeToggle.IsChecked = _userSettings.IsRealTimeModeEnabled
         EnableDarkTitleBar()
         InitDismIndicators()
         Await SetBingWallpaperAsync()
@@ -197,13 +202,154 @@ Class MainWindow
         StartWinPeFolderWatcher()
         StartWinPEMountDirWatcher()
 
+        ShowPreviousUpdateError()
+        Await CheckForUpdatesAsync(isManualCheck:=False)
+    End Sub
 
+    Private Async Sub CheckForUpdatesButton_Click(sender As Object, e As RoutedEventArgs)
+        Await CheckForUpdatesAsync(isManualCheck:=True)
     End Sub
-    Private Sub ExitMenuItem_Click(sender As Object, e As RoutedEventArgs)
-        ' Closes the application
-        Application.Current.Shutdown()
+
+    Private Sub OpenSettingsButton_Click(sender As Object, e As RoutedEventArgs)
+        MainGrid.IsEnabled = False
+        OpenSettingsButton.IsEnabled = False
+        SettingsOverlay.Visibility = Visibility.Visible
+        CloseSettingsButton.Focus()
     End Sub
+
+    Private Sub CloseSettingsButton_Click(sender As Object, e As RoutedEventArgs)
+        CloseSettingsOverlay()
+    End Sub
+
+    Private Sub SettingsOverlay_MouseLeftButtonDown(sender As Object, e As MouseButtonEventArgs)
+        If ReferenceEquals(e.OriginalSource, SettingsOverlay) Then
+            CloseSettingsOverlay()
+        End If
+    End Sub
+
+    Private Sub CloseSettingsOverlay()
+        SettingsOverlay.Visibility = Visibility.Collapsed
+        MainGrid.IsEnabled = True
+        OpenSettingsButton.IsEnabled = True
+        OpenSettingsButton.Focus()
+    End Sub
+
+    Private Sub RealTimeModeToggle_Click(sender As Object, e As RoutedEventArgs)
+        Dim previousValue = _userSettings.IsRealTimeModeEnabled
+        _userSettings.IsRealTimeModeEnabled = RealTimeModeToggle.IsChecked = True
+
+        Try
+            UserSettingsStore.Save(_userSettings)
+        Catch ex As Exception
+            _userSettings.IsRealTimeModeEnabled = previousValue
+            RealTimeModeToggle.IsChecked = previousValue
+            MessageBox.Show("The setting could not be saved." & Environment.NewLine & Environment.NewLine & ex.Message,
+                            "DISM Lab Settings",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error)
+        End Try
+    End Sub
+
+    Private Async Function CheckForUpdatesAsync(isManualCheck As Boolean) As Task
+        If _updateCheckInProgress Then
+            If isManualCheck Then
+                MessageBox.Show("An update check is already in progress.", "DISM Lab Update", MessageBoxButton.OK, MessageBoxImage.Information)
+            End If
+            Return
+        End If
+
+        _updateCheckInProgress = True
+        CheckForUpdatesButton.IsEnabled = False
+        Dim installationRequested = False
+
+        Try
+            Dim update = Await _updateService.CheckForUpdateAsync(CancellationToken.None)
+            If update Is Nothing Then
+                If isManualCheck Then
+                    MessageBox.Show($"DISM Lab v{_updateService.GetCurrentVersion()} is the latest version.", "No Updates Available", MessageBoxButton.OK, MessageBoxImage.Information)
+                End If
+                Return
+            End If
+
+            Dim prompt = $"DISM Lab v{update.LatestVersion} is available. You are currently running v{update.CurrentVersion}." &
+                         Environment.NewLine & Environment.NewLine &
+                         FormatReleaseNotes(update.Release.Body) &
+                         Environment.NewLine & Environment.NewLine &
+                         "Download and install this update now?"
+            Dim choice = MessageBox.Show(prompt, "DISM Lab Update Available", MessageBoxButton.YesNo, MessageBoxImage.Information)
+            If choice <> MessageBoxResult.Yes Then
+                Return
+            End If
+            installationRequested = True
+
+            If _operationInProgress OrElse Volatile.Read(_activeProcessCount) > 0 Then
+                MessageBox.Show("An update cannot be installed while a DISM operation is active. Finish the operation and check again.", "DISM Lab Update", MessageBoxButton.OK, MessageBoxImage.Warning)
+                Return
+            End If
+
+            Dim progress = New Progress(Of String)(Sub(status)
+                                                       MountSizeProgressText.Text = "Application Update"
+                                                       MountSizeProgressText.Visibility = Visibility.Visible
+                                                       MountSizeProgressTextDetail.Text = status
+                                                       MountSizeProgressTextDetail.Visibility = Visibility.Visible
+                                                   End Sub)
+            Dim stagedUpdate = Await _updateService.DownloadAndStageAsync(update, progress, CancellationToken.None)
+            MountSizeProgressTextDetail.Text = "Restarting to apply update..."
+            _updateService.LaunchStagedUpdate(stagedUpdate, AppContext.BaseDirectory)
+            Application.Current.Shutdown()
+        Catch ex As Exception
+            If isManualCheck OrElse installationRequested Then
+                MessageBox.Show("The update could not be completed." & Environment.NewLine & Environment.NewLine & ex.Message,
+                                "DISM Lab Update",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Error)
+            End If
+        Finally
+            _updateCheckInProgress = False
+            If CheckForUpdatesButton IsNot Nothing Then
+                CheckForUpdatesButton.IsEnabled = True
+            End If
+        End Try
+    End Function
+
+    Private Shared Function FormatReleaseNotes(releaseBody As String) As String
+        If String.IsNullOrWhiteSpace(releaseBody) Then
+            Return "NEW FEATURES" & Environment.NewLine & "No new features listed." &
+                   Environment.NewLine & Environment.NewLine &
+                   "BUG FIXES" & Environment.NewLine & "No bug fixes listed."
+        End If
+
+        Return releaseBody.Trim().
+            Replace("## New Features", "NEW FEATURES", StringComparison.OrdinalIgnoreCase).
+            Replace("## Bug Fixes", "BUG FIXES", StringComparison.OrdinalIgnoreCase).
+            Replace("## Other Changes", "OTHER CHANGES", StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    Private Shared Sub ShowPreviousUpdateError()
+        Dim errorPath = Path.Combine(AppStorageRoot, "update-error.txt")
+        If Not File.Exists(errorPath) Then
+            Return
+        End If
+
+        Try
+            Dim details = File.ReadAllText(errorPath)
+            File.Delete(errorPath)
+            MessageBox.Show("The previous update could not be applied and the prior version was restored." &
+                            Environment.NewLine & Environment.NewLine & details,
+                            "DISM Lab Update",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning)
+        Catch
+        End Try
+    End Sub
+
     Private Sub MainWindow_KeyDown(sender As Object, e As KeyEventArgs) Handles Me.KeyDown
+        If e.Key = Key.Escape AndAlso SettingsOverlay.Visibility = Visibility.Visible Then
+            CloseSettingsOverlay()
+            e.Handled = True
+            Return
+        End If
+
         If e.Key = Key.Delete Then
             DeleteEntryButton_Click(Nothing, New RoutedEventArgs())
         End If
@@ -836,7 +982,7 @@ Class MainWindow
         End Try
     End Function
 
-    Private Async Sub SelectWimMenuItem_Click(sender As Object, e As RoutedEventArgs)
+    Private Async Sub SelectWimButton_Click(sender As Object, e As RoutedEventArgs)
         ' Don't allow WIM selection during operations
         If _operationInProgress Then
             MessageBox.Show("Please wait for the current operation to complete.", "Operation In Progress", MessageBoxButton.OK, MessageBoxImage.Information)
@@ -880,25 +1026,17 @@ Class MainWindow
             Return
         End If
 
-        Dim psi As New ProcessStartInfo("dism.exe",
-                                        $" /Get-WimInfo /WimFile:""" & _wimPath & """") With {
-            .UseShellExecute = False,
-            .RedirectStandardOutput = True,
-            .RedirectStandardError = True,
-            .CreateNoWindow = True
-        }
-
         Dim output As String = ""
         Try
-            Using p As Process = Process.Start(psi)
-                StartDismIndicator()
-                output = Await p.StandardOutput.ReadToEndAsync()
-                Await p.WaitForExitAsync()
-            End Using
+            Dim arguments = $"/Get-WimInfo /WimFile:""{_wimPath}"""
+            Dim result = Await RunDismSimpleAsync(arguments)
+            output = result.StdOut
+
+            If result.ExitCode <> 0 AndAlso Not String.IsNullOrWhiteSpace(result.StdErr) Then
+                output &= Environment.NewLine & result.StdErr
+            End If
         Catch ex As Exception
             WimImagesListBox.Items.Add("Error running DISM: " & ex.Message)
-        Finally
-            StopDismIndicator()
         End Try
 
         If String.IsNullOrWhiteSpace(output) Then
@@ -1037,8 +1175,6 @@ Class MainWindow
         ' Disable mount directory controls
         DisableMountControls()
 
-        If SelectWimMenuItem IsNot Nothing Then SelectWimMenuItem.IsEnabled = False
-        If ExitMenuItem IsNot Nothing Then ExitMenuItem.IsEnabled = False
         UpdateWinPEUiState()
     End Sub
 
@@ -1047,8 +1183,6 @@ Class MainWindow
         _operationInProgress = False
 
         If WimImagesListBox IsNot Nothing Then WimImagesListBox.IsEnabled = True
-        If SelectWimMenuItem IsNot Nothing Then SelectWimMenuItem.IsEnabled = True
-        If ExitMenuItem IsNot Nothing Then ExitMenuItem.IsEnabled = True
 
         ' Re-enable Create WinPE button when not in an operation (allow even if mounted? keep disabled if mounted to avoid conflicts)
         If _CreateWinPE IsNot Nothing Then
@@ -1773,23 +1907,22 @@ Class MainWindow
             }
             StartDismIndicator()
             Using p As Process = Process.Start(psi)
-                Try
-                    ' Raise DISM to high priority so critical servicing work is less likely to be pre-empted
-                    p.PriorityClass = ProcessPriorityClass.High
-                Catch ex As Exception
-                    Debug.WriteLine("Failed to elevate DISM priority: " & ex.Message)
-                End Try
+                If p Is Nothing Then
+                    Throw New InvalidOperationException("Failed to start dism.exe.")
+                End If
+
+                Dim measurement = DismProcessPolicy.Apply(p, arguments)
                 Dim stdOutTask = p.StandardOutput.ReadToEndAsync()
                 Dim stdErrTask = p.StandardError.ReadToEndAsync()
                 Await p.WaitForExitAsync()
                 Dim result = (p.ExitCode, Await stdOutTask, Await stdErrTask)
-                StopDismIndicator()
+                measurement.Complete(p.ExitCode)
                 Return result
             End Using
         Catch ex As Exception
-            StopDismIndicator()
             Return (-1, "", "Exception: " & ex.Message)
         Finally
+            StopDismIndicator()
             ExitProcessBusyState()
             _dismOpLock.Release()
         End Try
@@ -4131,14 +4264,20 @@ Class MainWindow
             Return
         End If
 
-        Dim disks = Await Task.Run(Function() EnumerateUsbDisks())
+        Dim disks As List(Of DiskInfo)
+        Try
+            disks = Await Task.Run(Function() EnumerateEligibleDisks())
+        Catch ex As Exception
+            MessageBox.Show("Unable to enumerate target disks safely: " & ex.Message, "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End Try
 
         If disks.Count = 0 Then
-            MessageBox.Show("No removable USB disks were detected.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
+            MessageBox.Show("No eligible target disks were detected. The Windows OS disk is excluded.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Information)
             Return
         End If
 
-        Dim selector = New DiskSelectionWindow(disks, Function() EnumerateUsbDisks()) With {
+        Dim selector = New DiskSelectionWindow(disks, Function() EnumerateEligibleDisks()) With {
             .Owner = Me
         }
 
@@ -4149,43 +4288,64 @@ Class MainWindow
         End If
     End Sub
 
-    Private Function EnumerateUsbDisks() As List(Of DiskInfo)
+    Private Function EnumerateEligibleDisks() As List(Of DiskInfo)
         Dim disks As New List(Of DiskInfo)()
+        Dim osDiskNumbers = GetOperatingSystemDiskNumbers()
 
-        Try
-            Using searcher As New ManagementObjectSearcher("SELECT DeviceID, Index, Model, Size, MediaType, InterfaceType FROM Win32_DiskDrive")
-                For Each drive As ManagementObject In searcher.Get()
-                    Dim interfaceType = Convert.ToString(drive("InterfaceType"))
-                    Dim isUsb = String.Equals(interfaceType, "USB", StringComparison.OrdinalIgnoreCase)
-                    If Not isUsb Then
-                        Continue For
-                    End If
+        Using searcher As New ManagementObjectSearcher("SELECT DeviceID, Index, Model, Size, MediaType, InterfaceType FROM Win32_DiskDrive")
+            For Each drive As ManagementObject In searcher.Get()
+                Dim indexValue As Integer
+                If Not Integer.TryParse(Convert.ToString(drive("Index")), indexValue) OrElse osDiskNumbers.Contains(indexValue) Then
+                    Continue For
+                End If
 
-                    Dim sizeValue As Long
-                    Long.TryParse(Convert.ToString(drive("Size")), sizeValue)
+                Dim sizeValue As Long
+                Long.TryParse(Convert.ToString(drive("Size")), sizeValue)
 
-                    Dim indexValue As Integer
-                    Integer.TryParse(Convert.ToString(drive("Index")), indexValue)
+                Dim interfaceType = Convert.ToString(drive("InterfaceType"))
+                Dim disk = New DiskInfo With {
+                    .Number = indexValue,
+                    .Model = Convert.ToString(drive("Model")),
+                    .SizeBytes = sizeValue,
+                    .MediaType = Convert.ToString(drive("MediaType")),
+                    .Connection = If(String.IsNullOrWhiteSpace(interfaceType), "Unknown", interfaceType),
+                    .DeviceId = Convert.ToString(drive("DeviceID")),
+                    .IsUsb = String.Equals(interfaceType, "USB", StringComparison.OrdinalIgnoreCase),
+                    .DisplaySize = FormatBytes(sizeValue)
+                }
 
-                    Dim disk = New DiskInfo With {
-                        .Number = indexValue,
-                        .Model = Convert.ToString(drive("Model")),
-                        .SizeBytes = sizeValue,
-                        .MediaType = Convert.ToString(drive("MediaType")),
-                        .Connection = interfaceType,
-                        .DeviceId = Convert.ToString(drive("DeviceID")),
-                        .IsUsb = True,
-                        .DisplaySize = FormatBytes(sizeValue)
-                    }
-
-                    disks.Add(disk)
-                Next
-            End Using
-        Catch ex As Exception
-            Debug.WriteLine("Disk enumeration failed: " & ex.Message)
-        End Try
+                disks.Add(disk)
+            Next
+        End Using
 
         Return disks
+    End Function
+
+    Private Function GetOperatingSystemDiskNumbers() As HashSet(Of Integer)
+        Dim windowsDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Windows)
+        Dim systemDrive = Path.GetPathRoot(windowsDirectory)?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        If String.IsNullOrWhiteSpace(systemDrive) Then
+            Throw New InvalidOperationException("Unable to determine the Windows system drive.")
+        End If
+
+        Dim diskNumbers As New HashSet(Of Integer)()
+        Dim escapedDrive = systemDrive.Replace("'", "''")
+        Dim query = $"ASSOCIATORS OF {{Win32_LogicalDisk.DeviceID='{escapedDrive}'}} WHERE AssocClass=Win32_LogicalDiskToPartition"
+
+        Using searcher As New ManagementObjectSearcher(query)
+            For Each partition As ManagementObject In searcher.Get()
+                Dim diskIndex As Integer
+                If Integer.TryParse(Convert.ToString(partition("DiskIndex")), diskIndex) Then
+                    diskNumbers.Add(diskIndex)
+                End If
+            Next
+        End Using
+
+        If diskNumbers.Count = 0 Then
+            Throw New InvalidOperationException($"Unable to identify the physical disk containing {systemDrive}.")
+        End If
+
+        Return diskNumbers
     End Function
 
     Private Async Function CreateUsbMediaAsync(selectedDisk As DiskInfo) As Task
@@ -4194,7 +4354,7 @@ Class MainWindow
         End If
 
         If selectedDisk.Number < 0 Then
-            MessageBox.Show("Unable to determine the disk number for the selected USB drive.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+            MessageBox.Show("Unable to determine the selected disk number.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
             Return
         End If
 
@@ -4203,12 +4363,30 @@ Class MainWindow
             Return
         End If
 
-        Dim prompt = $"Disk #{selectedDisk.Number}: {selectedDisk.Model}{Environment.NewLine}Size: {selectedDisk.DisplaySize}{Environment.NewLine}{Environment.NewLine}All data on this disk will be deleted. Continue?"
-        Dim confirm = MessageBox.Show(prompt, "Prepare USB Disk", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+        Dim prompt = $"Disk #{selectedDisk.Number}: {selectedDisk.Model}{Environment.NewLine}Size: {selectedDisk.DisplaySize}{Environment.NewLine}Connection: {selectedDisk.Connection}{Environment.NewLine}{Environment.NewLine}All data on this disk will be deleted. Continue?"
+        Dim confirm = MessageBox.Show(prompt, "Prepare Target Disk", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
         If confirm <> MessageBoxResult.Yes Then
             Return
         End If
 
+        Dim currentDisk As DiskInfo
+        Try
+            Dim eligibleDisks = Await Task.Run(Function() EnumerateEligibleDisks())
+            currentDisk = eligibleDisks.FirstOrDefault(Function(d) d.Number = selectedDisk.Number AndAlso
+                                                                    String.Equals(d.DeviceId, selectedDisk.DeviceId, StringComparison.OrdinalIgnoreCase) AndAlso
+                                                                    d.SizeBytes = selectedDisk.SizeBytes AndAlso
+                                                                    String.Equals(d.Model, selectedDisk.Model, StringComparison.OrdinalIgnoreCase))
+        Catch ex As Exception
+            MessageBox.Show("Unable to verify that the selected disk is safe to use: " & ex.Message, "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return
+        End Try
+
+        If currentDisk Is Nothing Then
+            MessageBox.Show("The selected disk is no longer available or is not eligible. Refresh the disk list and try again.", "WinPE", MessageBoxButton.OK, MessageBoxImage.Warning)
+            Return
+        End If
+
+        selectedDisk = currentDisk
         Dim bootVolumeLabel = GetBootVolumeLabelForCurrentBuild()
 
         DisableAllControls()
@@ -4784,17 +4962,15 @@ Class MainWindow
 
             ' Force restore button states AFTER EnableAllControls completes
             ' This ensures they're not overridden by UpdateWinPEUiState or RestoreMountButtonState
-            Dispatcher.InvokeAsync(Sub()
-                                       If ClearButton IsNot Nothing Then
-                                           ClearButton.IsEnabled = clearButtonWasEnabled
-                                       End If
-                                       If _CreateWinPE IsNot Nothing Then
-                                           _CreateWinPE.IsEnabled = createWinPeWasEnabled
-                                       End If
-                                       If CreateUsbButton IsNot Nothing Then
-                                           CreateUsbButton.IsEnabled = createUsbWasEnabled
-                                       End If
-                                   End Sub, DispatcherPriority.Loaded)
+            If ClearButton IsNot Nothing Then
+                ClearButton.IsEnabled = clearButtonWasEnabled
+            End If
+            If _CreateWinPE IsNot Nothing Then
+                _CreateWinPE.IsEnabled = createWinPeWasEnabled
+            End If
+            If CreateUsbButton IsNot Nothing Then
+                CreateUsbButton.IsEnabled = createUsbWasEnabled
+            End If
         End Try
     End Sub
 
@@ -4846,11 +5022,52 @@ Class MainWindow
             Dim result = Await RunDismSimpleAsync(args)
 
             If result.ExitCode = 0 Then
+                ' Parse driver counts from DISM output
+                Dim driversFound As Integer = 0
+                Dim driversCaptured As Integer = 0
+
+                ' Debug: Log the output to see the actual format
+                Debug.WriteLine("DISM Export-Driver Output:")
+                Debug.WriteLine(result.StdOut)
+
+                ' Try multiple patterns to match different DISM output formats
+                ' Look for patterns like:
+                ' "Exporting 1 of 150 - oem0.inf"
+                ' "Exporting driver packages..."
+                ' Count the "Exporting X of Y" lines to get the total
+                Dim exportingMatches = System.Text.RegularExpressions.Regex.Matches(result.StdOut, "Exporting\s+(\d+)\s+of\s+(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+
+                If exportingMatches.Count > 0 Then
+                    ' Get the last match which should have the final count
+                    Dim lastMatch = exportingMatches(exportingMatches.Count - 1)
+                    Integer.TryParse(lastMatch.Groups(2).Value, driversFound)
+                    Integer.TryParse(lastMatch.Groups(1).Value, driversCaptured)
+                End If
+
+                ' Alternative: Look for summary lines
+                If driversFound = 0 Then
+                    Dim foundMatch = System.Text.RegularExpressions.Regex.Match(result.StdOut, "(?:Total\s+)?driver\s+packages?\s+(?:found|scanned)\s*[:：]\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                    If foundMatch.Success Then
+                        Integer.TryParse(foundMatch.Groups(1).Value, driversFound)
+                    End If
+                End If
+
+                If driversCaptured = 0 Then
+                    Dim exportedMatch = System.Text.RegularExpressions.Regex.Match(result.StdOut, "(?:Total\s+)?(?:driver\s+packages?\s+)?(?:successfully\s+)?exported\s*[:：]\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                    If exportedMatch.Success Then
+                        Integer.TryParse(exportedMatch.Groups(1).Value, driversCaptured)
+                    End If
+                End If
+
                 ' Success
                 If MountSizeProgressText IsNot Nothing Then
                     MountSizeProgressText.Text = "100%"
                     MountSizeProgressText.Foreground = New SolidColorBrush(Colors.LimeGreen)
-                    MountSizeProgressTextDetail.Text = "System driver capture complete"
+                    If driversFound > 0 OrElse driversCaptured > 0 Then
+                        MountSizeProgressTextDetail.Text = $"System driver capture complete{Environment.NewLine}{driversCaptured} of {driversFound} drivers captured"
+                    Else
+                        MountSizeProgressTextDetail.Text = "System driver capture complete"
+                    End If
                 End If
 
                 Await Task.Delay(3000)
@@ -4861,10 +5078,23 @@ Class MainWindow
 
                 ResetMountProgressUi()
 
-                MessageBox.Show($"System drivers successfully captured to:{Environment.NewLine}{destinationPath}",
-                               "Success",
-                               MessageBoxButton.OK,
-                               MessageBoxImage.Information)
+                Dim summaryMessage As String
+                If driversFound > 0 OrElse driversCaptured > 0 Then
+                    summaryMessage = $"System drivers successfully captured to:{Environment.NewLine}{destinationPath}{Environment.NewLine}{Environment.NewLine}Drivers found: {driversFound}{Environment.NewLine}Drivers captured: {driversCaptured}"
+                Else
+                    ' If we couldn't parse the counts, count the .inf files in the destination
+                    Dim infFiles = Directory.GetFiles(destinationPath, "*.inf", SearchOption.AllDirectories)
+                    If infFiles.Length > 0 Then
+                        summaryMessage = $"System drivers successfully captured to:{Environment.NewLine}{destinationPath}{Environment.NewLine}{Environment.NewLine}Driver packages captured: {infFiles.Length}"
+                    Else
+                        summaryMessage = $"System drivers successfully captured to:{Environment.NewLine}{destinationPath}"
+                    End If
+                End If
+
+                MessageBox.Show(summaryMessage,
+                                "Success",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Information)
             Else
                 MessageBox.Show($"System driver capture failed (code {result.ExitCode}):{Environment.NewLine}{result.StdErr}",
                    "DISM",

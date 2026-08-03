@@ -1,16 +1,18 @@
 Imports System.Windows
 Imports System.Diagnostics
 Imports System.Text.RegularExpressions
-Imports System.Threading
 
 Namespace YourNamespace
     Partial Public Class DismProgressWindow
         Inherits Window
 
+        Private Shared ReadOnly CompletedProgressRegex As New Regex("(\d{1,3}(?:\.\d+)?)%\s*completed", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+        Private Shared ReadOnly ProgressRegex As New Regex("(\d{1,3}(?:\.\d+)?)%", RegexOptions.IgnoreCase Or RegexOptions.Compiled)
+
         Private _process As Process
-        Private _cts As CancellationTokenSource
-        Private _completed As Boolean = False
-        Private _progressStarted As Boolean = False
+        Private _measurement As DismProcessMeasurement
+        Private _completed As Boolean
+        Private _progressStarted As Boolean
 
         Public Sub New()
             InitializeComponent()
@@ -33,7 +35,6 @@ Namespace YourNamespace
 
             Dim args = $"/English /Get-WimInfo /WimFile:""" & wimPath & """ /Index:" & idx
             AppendLine("Starting: dism.exe " & args)
-            _cts = New CancellationTokenSource()
 
             Dim psi As New ProcessStartInfo("dism.exe", args) With {
                 .UseShellExecute = False,
@@ -55,6 +56,7 @@ Namespace YourNamespace
                     Return
                 End If
 
+                _measurement = DismProcessPolicy.Apply(_process, args)
                 _process.BeginOutputReadLine()
                 _process.BeginErrorReadLine()
             Catch ex As Exception
@@ -81,9 +83,11 @@ Namespace YourNamespace
 
         Private Sub OnExited(sender As Object, e As EventArgs)
             Dispatcher.BeginInvoke(Sub()
+                                       Dim exitCode = _process.ExitCode
+                                       _measurement?.Complete(exitCode)
                                        _completed = True
-                                       AppendLine($"Process exited with code {_process.ExitCode}.")
-                                       If _process.ExitCode = 0 AndAlso ProgressBar.Value < 100 Then
+                                       AppendLine($"Process exited with code {exitCode}.")
+                                       If exitCode = 0 AndAlso ProgressBar.Value < 100 Then
                                            ProgressBar.IsIndeterminate = False
                                            ProgressBar.Value = 100
                                        End If
@@ -93,11 +97,9 @@ Namespace YourNamespace
         End Sub
 
         Private Sub TryUpdateProgress(line As String)
-            ' Match forms like "12.3% completed" or "12% completed"
-            Dim m = Regex.Match(line, "(\d{1,3}(\.\d+)?)%\s*completed", RegexOptions.IgnoreCase)
+            Dim m = CompletedProgressRegex.Match(line)
             If Not m.Success Then
-                ' Fallback: sometimes DISM prints just "xx.x%" alone
-                m = Regex.Match(line, "(\d{1,3}(\.\d+)?)%", RegexOptions.IgnoreCase)
+                m = ProgressRegex.Match(line)
             End If
             If m.Success Then
                 Dim pctText = m.Groups(1).Value
@@ -122,7 +124,6 @@ Namespace YourNamespace
             CancelButton.IsEnabled = False
             AppendLine("Cancellation requested...")
             Try
-                _cts?.Cancel()
                 If _process IsNot Nothing AndAlso Not _process.HasExited Then
                     _process.Kill(True)
                     AppendLine("Process terminated.")
@@ -149,7 +150,6 @@ Namespace YourNamespace
                 End If
             Catch
             End Try
-            _cts?.Dispose()
         End Sub
     End Class
 End Namespace

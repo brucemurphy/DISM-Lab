@@ -1,0 +1,125 @@
+name: Publish portable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag in vMAJOR.MINOR.PATCH format
+        required: true
+        default: v1.0.0
+        type: string
+      new_features:
+        description: New features (Markdown list or "None")
+        required: true
+        default: None.
+        type: string
+      bug_fixes:
+        description: Bug fixes (Markdown list or "None")
+        required: true
+        default: None.
+        type: string
+      other_changes:
+        description: Other changes (Markdown list or "None")
+        required: false
+        default: None.
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ inputs.version }}
+      NEW_FEATURES: ${{ inputs.new_features }}
+      BUG_FIXES: ${{ inputs.bug_fixes }}
+      OTHER_CHANGES: ${{ inputs.other_changes }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Validate release version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Version must use vMAJOR.MINOR.PATCH format."
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          [xml]$project = Get-Content -LiteralPath 'DISM Lab.vbproj'
+          $projectVersion = ($project.SelectSingleNode('//VersionPrefix')).InnerText
+          if ($projectVersion -ne $version) {
+            throw "DISM Lab.vbproj VersionPrefix '$projectVersion' does not match requested release '$version'."
+          }
+          if (git tag --list $env:RELEASE_TAG) {
+            throw "Tag '$env:RELEASE_TAG' already exists."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "asset_name=DISM-Lab-$($env:RELEASE_TAG)-win-x64.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Restore
+        run: dotnet restore "DISM Lab.vbproj" -r win-x64
+
+      - name: Publish self-contained Windows x64 app
+        shell: pwsh
+        run: dotnet publish 'DISM Lab.vbproj' -c Release -r win-x64 --self-contained true --no-restore -p:VersionPrefix=${{ steps.version.outputs.version }} -p:AssemblyVersion=${{ steps.version.outputs.version }}.0 -p:FileVersion=${{ steps.version.outputs.version }}.0 -p:InformationalVersion=${{ steps.version.outputs.version }} --output artifacts/publish/win-x64
+
+      - name: Package and checksum
+        id: package
+        shell: pwsh
+        env:
+          ASSET_NAME: ${{ steps.version.outputs.asset_name }}
+        run: |
+          New-Item -ItemType Directory -Path artifacts/release -Force | Out-Null
+          $assetPath = Join-Path artifacts/release $env:ASSET_NAME
+          Compress-Archive -Path 'artifacts/publish/win-x64/*' -DestinationPath $assetPath -CompressionLevel Optimal
+          $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash
+          "$hash  $env:ASSET_NAME" | Set-Content -LiteralPath "$assetPath.sha256" -Encoding ascii
+          "asset_path=$assetPath" >> $env:GITHUB_OUTPUT
+          "checksum_path=$assetPath.sha256" >> $env:GITHUB_OUTPUT
+
+      - name: Create categorized release notes
+        shell: pwsh
+        run: |
+          $notes = @(
+            "# DISM Lab $env:RELEASE_TAG",
+            "",
+            "## New Features",
+            $env:NEW_FEATURES,
+            "",
+            "## Bug Fixes",
+            $env:BUG_FIXES,
+            "",
+            "## Other Changes",
+            $env:OTHER_CHANGES,
+            "",
+            "## Download",
+            "Download the Windows x64 ZIP, extract it to a writable folder, and run ``DISM Lab.exe``. The package is self-contained and does not require a separate .NET installation."
+          )
+          $notes | Set-Content -LiteralPath artifacts/release/release-notes.md -Encoding utf8
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DISM-Lab-${{ inputs.version }}-win-x64
+          path: |
+            ${{ steps.package.outputs.asset_path }}
+            ${{ steps.package.outputs.checksum_path }}
+            artifacts/release/release-notes.md
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_PATH: ${{ steps.package.outputs.asset_path }}
+          CHECKSUM_PATH: ${{ steps.package.outputs.checksum_path }}
+        run: gh release create $env:RELEASE_TAG $env:ASSET_PATH $env:CHECKSUM_PATH --target $env:GITHUB_SHA --title "DISM Lab $env:RELEASE_TAG" --notes-file artifacts/release/release-notes.md

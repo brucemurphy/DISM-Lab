@@ -7,6 +7,14 @@
     <UseWPF>true</UseWPF>
     <ApplicationIcon>DISMLab.ico</ApplicationIcon>
     <PackageIcon>DISMLab.png</PackageIcon>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <AssemblyVersion>$(VersionPrefix).0</AssemblyVersion>
+    <FileVersion>$(VersionPrefix).0</FileVersion>
+    <InformationalVersion>$(VersionPrefix)</InformationalVersion>
+    <Product>DISM Lab</Product>
+    <Authors>Bruce Murphy</Authors>
+    <RepositoryUrl>https://github.com/brucemurphy/DISM-Lab</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,6 +31,10 @@
     <Import Include="System.Windows.Media.Imaging" />
     <Import Include="System.Windows.Navigation" />
     <Import Include="System.Windows.Shapes" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include=".github\workflows\release.yml" />
   </ItemGroup>
 
   <ItemGroup>
@@ -45,5 +57,9 @@
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="My Project\PublishProfiles\" />
   </ItemGroup>
 </Project>

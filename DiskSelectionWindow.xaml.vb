@@ -16,18 +16,18 @@ Partial Public Class DiskSelectionWindow
     End Sub
 
     Private Sub UpdateDiskList(disks As IEnumerable(Of DiskInfo))
-        Dim usbDisks As List(Of DiskInfo)
+        Dim eligibleDisks As List(Of DiskInfo)
 
         If disks Is Nothing Then
-            usbDisks = New List(Of DiskInfo)()
+            eligibleDisks = New List(Of DiskInfo)()
         Else
-            usbDisks = disks.Where(Function(d) d IsNot Nothing AndAlso d.IsUsb) _
-                             .OrderBy(Function(d) d.Number) _
-                             .ToList()
+            eligibleDisks = disks.Where(Function(d) d IsNot Nothing) _
+                                 .OrderBy(Function(d) d.Number) _
+                                 .ToList()
         End If
 
-        DiskListView.ItemsSource = usbDisks
-        Dim hasItems = usbDisks.Count > 0
+        DiskListView.ItemsSource = eligibleDisks
+        Dim hasItems = eligibleDisks.Count > 0
         DiskListView.IsEnabled = hasItems
         EmptyStateText.Visibility = If(hasItems, Visibility.Collapsed, Visibility.Visible)
 
@@ -36,7 +36,7 @@ Partial Public Class DiskSelectionWindow
 
     Private Sub OkButton_Click(sender As Object, e As RoutedEventArgs)
         If Not DiskListView.IsEnabled Then
-            MessageBox.Show("No removable USB disks are available.", Title, MessageBoxButton.OK, MessageBoxImage.Information)
+            MessageBox.Show("No eligible target disks are available.", Title, MessageBoxButton.OK, MessageBoxImage.Information)
             Return
         End If
 

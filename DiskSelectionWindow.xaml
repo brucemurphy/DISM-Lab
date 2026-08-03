@@ -1,9 +1,9 @@
 <Window x:Class="DiskSelectionWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Select USB Disk"
+        Title="Select Target Disk"
         Height="360"
-        Width="560"
+        Width="703"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="#0F0F0F"
@@ -116,11 +116,11 @@
         </Grid.RowDefinitions>
 
         <StackPanel Orientation="Vertical">
-            <TextBlock Text="Select the disk that should be cleaned and prepared for the WinPE USB."
+            <TextBlock Text="Select the disk that should be cleaned and prepared for WinPE."
                        FontSize="15"
                        FontWeight="SemiBold"
                        Margin="0,0,0,4" />
-            <TextBlock Text="Only removable USB media are shown."
+            <TextBlock Text="All physical disks except the disk containing Windows are shown."
                        Foreground="#9BA3AE"
                        FontSize="12" />
         </StackPanel>
@@ -152,13 +152,13 @@
                             </GridViewColumn>
                             <GridViewColumn Header="Size" Width="90" DisplayMemberBinding="{Binding DisplaySize}" />
                             <GridViewColumn Header="Connection" Width="90" DisplayMemberBinding="{Binding Connection}" />
-                            <GridViewColumn Header="Media" Width="90" DisplayMemberBinding="{Binding MediaType}" />
+                            <GridViewColumn Header="Media" Width="120" DisplayMemberBinding="{Binding MediaType}" />
                         </GridView>
                     </ListView.View>
                 </ListView>
 
                 <TextBlock x:Name="EmptyStateText"
-                           Text="No USB disks were detected. Attach a removable drive and refresh."
+                           Text="No eligible target disks were detected. Attach a disk and refresh."
                            Foreground="#9BA3AE"
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center"
@@ -170,7 +170,7 @@
         </Border>
 
         <StackPanel Grid.Row="2" Orientation="Vertical" Margin="0,4,0,0">
-            <TextBlock Text="WARNING: The selected disk will be cleaned. Ensure the correct removable disk is selected."
+            <TextBlock Text="WARNING: The selected disk will be completely erased. Verify its disk number, model, and size."
                        Foreground="#EE0000"
                        TextWrapping="Wrap"
                        Margin="0,0,0,10" />
@@ -184,7 +184,7 @@
                         Width="110"
                         Click="RefreshDisksButton_Click"
                         HorizontalAlignment="Left"
-                        ToolTip="Rescan for removable USB disks" />
+                        ToolTip="Rescan for eligible target disks" />
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button Content="Cancel" Width="100" Margin="0,0,8,0" Click="CancelButton_Click" />
                     <Button Content="Use Disk" Width="120" Click="OkButton_Click" />

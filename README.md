@@ -3,6 +3,23 @@
 ## What is DISM Lab?
 DISM Lab is a Windows application that makes it easy to work with Windows Image (WIM) files and create Windows PE boot media. Whether you need to customize Windows installation images, add drivers, apply updates, or create bootable USB drives, DISM Lab provides a simple visual interface to get the job done.
 
+## Download and Install
+
+DISM Lab 1.0 is distributed from [GitHub Releases](https://github.com/brucemurphy/DISM-Lab/releases) as a self-contained Windows x64 portable ZIP.
+
+1. Download `DISM-Lab-v1.0.0-win-x64.zip` from the latest release.
+2. Optionally verify it using the accompanying `.sha256` file.
+3. Extract the entire ZIP into a writable folder.
+4. Run `DISM Lab.exe` and approve the administrator prompt.
+
+No installer or separate .NET Desktop Runtime is required. Keep all published files together in the extracted folder.
+
+## Application Updates
+
+DISM Lab checks the repository's latest stable GitHub Release once at startup. You can also open **Settings** from the bottom-right corner and select **Check for updates**. When a newer version is available, the app displays its **New Features**, **Bug Fixes**, and **Other Changes** before asking whether to install it.
+
+Accepted updates are downloaded over HTTPS, verified against the release's SHA-256 checksum, staged safely, and applied after the app closes. DISM Lab then restarts automatically. Application data under `%LOCALAPPDATA%\DISM_Lab` and Windows PE working files under `C:\WinPE` are preserved.
+
 ## What Can You Do With It?
 
 ### Working with Windows Images
@@ -26,7 +43,7 @@ DISM Lab is a Windows application that makes it easy to work with Windows Image 
 ## How to Use It
 
 ### Basic Workflow
-1. **Select a WIM file** from the File menu
+1. **Select a WIM file** with the **Browse** button
 2. **Choose what you want to do** - the available buttons change based on whether you've selected an image or mounted one
 3. **Follow the prompts** - each operation guides you through folder selection or confirmation dialogs
 4. **Watch the progress** - a live indicator shows you exactly what's happening and how much is complete
