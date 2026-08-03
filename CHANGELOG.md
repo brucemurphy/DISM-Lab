@@ -16,7 +16,21 @@ All notable changes to DISM Lab are recorded here. Releases follow Semantic Vers
 
 - None.
 
-## 1.0.0 - Unreleased
+## 1.0.1 - 2026-08-03
+
+### New Features
+
+- None.
+
+### Bug Fixes
+
+- None.
+
+### Other Changes
+
+- Publish a staged patch release to validate the in-app upgrade path from v1.0.0.
+
+## 1.0.0 - 2026-08-03
 
 ### New Features
 
