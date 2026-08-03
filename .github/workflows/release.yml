@@ -71,7 +71,7 @@ jobs:
 
       - name: Publish self-contained Windows x64 app
         shell: pwsh
-        run: dotnet publish 'DISM Lab.vbproj' -c Release -r win-x64 --self-contained true --no-restore -p:VersionPrefix=${{ steps.version.outputs.version }} -p:AssemblyVersion=${{ steps.version.outputs.version }}.0 -p:FileVersion=${{ steps.version.outputs.version }}.0 -p:InformationalVersion=${{ steps.version.outputs.version }} --output artifacts/publish/win-x64
+        run: dotnet publish 'DISM Lab.vbproj' -c Release -r win-x64 --self-contained true --no-restore -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:PublishReadyToRun=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -p:VersionPrefix=${{ steps.version.outputs.version }} -p:AssemblyVersion=${{ steps.version.outputs.version }}.0 -p:FileVersion=${{ steps.version.outputs.version }}.0 -p:InformationalVersion=${{ steps.version.outputs.version }} --output artifacts/publish/win-x64
 
       - name: Package and checksum
         id: package
@@ -80,8 +80,13 @@ jobs:
           ASSET_NAME: ${{ steps.version.outputs.asset_name }}
         run: |
           New-Item -ItemType Directory -Path artifacts/release -Force | Out-Null
+          $publishedFiles = @(Get-ChildItem -LiteralPath 'artifacts/publish/win-x64' -File)
+          if ($publishedFiles.Count -ne 1 -or $publishedFiles[0].Name -ne 'DISM Lab.exe') {
+            $names = $publishedFiles.Name -join ', '
+            throw "Expected a single published file named 'DISM Lab.exe', but found: $names"
+          }
           $assetPath = Join-Path artifacts/release $env:ASSET_NAME
-          Compress-Archive -Path 'artifacts/publish/win-x64/*' -DestinationPath $assetPath -CompressionLevel Optimal
+          Compress-Archive -LiteralPath $publishedFiles[0].FullName -DestinationPath $assetPath -CompressionLevel Optimal
           $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash
           "$hash  $env:ASSET_NAME" | Set-Content -LiteralPath "$assetPath.sha256" -Encoding ascii
           "asset_path=$assetPath" >> $env:GITHUB_OUTPUT
@@ -103,7 +108,7 @@ jobs:
             $env:OTHER_CHANGES,
             "",
             "## Download",
-            "Download the Windows x64 ZIP, extract it to a writable folder, and run ``DISM Lab.exe``. The package is self-contained and does not require a separate .NET installation."
+            "Download the Windows x64 ZIP, extract the single ``DISM Lab.exe`` file to a writable folder, and run it. The executable is self-contained and does not require a separate .NET installation."
           )
           $notes | Set-Content -LiteralPath artifacts/release/release-notes.md -Encoding utf8
 
