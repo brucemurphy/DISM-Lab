@@ -77,12 +77,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Track" Property="Background" Value="#FF0F6CBD"/>
-                                <Setter TargetName="Track" Property="BorderBrush" Value="#FF3A96DD"/>
+                                <Setter TargetName="Track" Property="Background" Value="#FFFFC107"/>
+                                <Setter TargetName="Track" Property="BorderBrush" Value="#FFFFC107"/>
                                 <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right"/>
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Track" Property="BorderBrush" Value="#FF8A8A8A"/>
+                                <Setter TargetName="Track" Property="BorderBrush" Value="#FFFFD54F"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.5"/>
@@ -102,12 +102,12 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <SolidColorBrush x:Key="Item.MouseOver.Background" Color="#1F26A0DA"/>
-        <SolidColorBrush x:Key="Item.MouseOver.Border" Color="#a826A0Da"/>
-        <SolidColorBrush x:Key="Item.SelectedActive.Background" Color="#3D26A0DA"/>
-        <SolidColorBrush x:Key="Item.SelectedActive.Border" Color="#FF26A0DA"/>
-        <SolidColorBrush x:Key="Item.SelectedInactive.Background" Color="#3DDADADA"/>
-        <SolidColorBrush x:Key="Item.SelectedInactive.Border" Color="#FFDADADA"/>
+        <SolidColorBrush x:Key="Item.MouseOver.Background" Color="#1FFFC107"/>
+        <SolidColorBrush x:Key="Item.MouseOver.Border" Color="#66FFC107"/>
+        <SolidColorBrush x:Key="Item.SelectedActive.Background" Color="#33FFC107"/>
+        <SolidColorBrush x:Key="Item.SelectedActive.Border" Color="#FFFFC107"/>
+        <SolidColorBrush x:Key="Item.SelectedInactive.Background" Color="#1FFFC107"/>
+        <SolidColorBrush x:Key="Item.SelectedInactive.Border" Color="#99FFC107"/>
         <Style x:Key="ListBoxItemContainerRoundedStyle" TargetType="{x:Type ListBoxItem}">
             <Setter Property="SnapsToDevicePixels" Value="True"/>
             <Setter Property="Padding" Value="4,1"/>
@@ -187,20 +187,34 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" TargetName="border" Value="#3FFFFFFF"/>
+                                <Setter Property="Background" TargetName="border" Value="#FFFFD54F"/>
+                                <Setter Property="Foreground" Value="#FF17130A"/>
+                                <Setter Property="BorderBrush" TargetName="border" Value="#FFFFC107"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter Property="Background" TargetName="border" Value="#5FFFFFFF"/>
+                                <Setter Property="Background" TargetName="border" Value="#FFFFA000"/>
+                                <Setter Property="Foreground" Value="#FF17130A"/>
+                                <Setter Property="BorderBrush" TargetName="border" Value="#FFFFA000"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Background" TargetName="border" Value="#FF2D2D2D"/>
                                 <Setter Property="Foreground" Value="#FF9D9D9D"/>
+                                <Setter Property="TextElement.Foreground" TargetName="contentPresenter" Value="#FF9D9D9D"/>
                                 <Setter Property="BorderBrush" TargetName="border" Value="#FF2D2D2D"/>
+                                <Setter Property="Cursor" Value="Arrow"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <Style x:Key="AccentRoundedButtonStyle"
+               TargetType="{x:Type Button}"
+               BasedOn="{StaticResource RoundedButtonStyle}">
+            <Setter Property="Background" Value="#FFFFC107"/>
+            <Setter Property="Foreground" Value="#FF17130A"/>
+            <Setter Property="BorderBrush" Value="#FFFFC107"/>
         </Style>
 
         <Style x:Key="RoundedComboBoxStyle" TargetType="{x:Type ComboBox}">
@@ -265,7 +279,7 @@
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" TargetName="border" Value="#3FFFFFFF"/>
+                                <Setter Property="Background" TargetName="border" Value="#1FFFC107"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Background" TargetName="border" Value="#FF2D2D2D"/>
@@ -293,7 +307,7 @@
                                     </Border>
                                     <ControlTemplate.Triggers>
                                         <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter Property="Background" TargetName="itemBorder" Value="#3FFFFFFF"/>
+                                            <Setter Property="Background" TargetName="itemBorder" Value="#33FFC107"/>
                                         </Trigger>
                                     </ControlTemplate.Triggers>
                                 </ControlTemplate>
@@ -399,25 +413,25 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition/>
                             </Grid.ColumnDefinitions>
-                            <Label Content="Select WIM File" HorizontalAlignment="Left" Margin="10,0,0,0" Width="140" Foreground="#FFE2E2E2" VerticalAlignment="Top" Height="26"/>
+                            <Label Content="IMAGE" HorizontalAlignment="Left" Margin="10,0,0,0" Width="140" Foreground="#FFBDBDBD" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Top" Height="26"/>
                             <Button x:Name="SelectWimButton"
-                                Content="Browse..."
+                                Content="Select WIM File"
                                 Click="SelectWimButton_Click"
-                                Style="{StaticResource RoundedButtonStyle}"
+                                Style="{StaticResource AccentRoundedButtonStyle}"
                                 Margin="10,26,10,0"
                                 Height="30"
                                 VerticalAlignment="Top" 
                                 UseLayoutRounding="True" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
 
                             <StackPanel x:Name="WinPEActionsPanel"
-                                    Margin="10,288,10,0"
+                                    Margin="10,338,10,0"
                                     VerticalAlignment="Top"
                                     HorizontalAlignment="Center"
                                     Width="195">
                                 <Button x:Name="_CreateWinPE"
                                     Content="Create WinPE"
                                     Click="CreateWinPE_Click"
-                                    Style="{StaticResource RoundedButtonStyle}"
+                                    Style="{StaticResource AccentRoundedButtonStyle}"
                                     Height="30"
                                     UseLayoutRounding="True"
                                     HorizontalContentAlignment="Center"
@@ -439,22 +453,53 @@
                                     VerticalContentAlignment="Center"
                                     Visibility="Collapsed"/>
                             </StackPanel>
-                            <TextBlock x:Name="TitleLabel" 
-               Foreground="White"
- VerticalAlignment="Top"
- Margin="0,61,0,0" 
- Height="89"
- TextWrapping="Wrap" HorizontalAlignment="Center" RenderTransformOrigin="0.5,0.5" Width="195">
-                                <TextBlock.RenderTransform>
-                                    <TransformGroup>
-                                        <ScaleTransform ScaleX="1"/>
-                                        <SkewTransform/>
-                                        <RotateTransform/>
-                                        <TranslateTransform/>
-                                    </TransformGroup>
-                                </TextBlock.RenderTransform>
-                            </TextBlock>
-                            <Label Content="WinPE" HorizontalAlignment="Left" Margin="10,255,0,0" Width="140" Foreground="#FFE2E2E2" VerticalAlignment="Top" Height="26"/>
+                            <Border x:Name="CurrentImageCard"
+                                    Margin="10,68,10,0"
+                                    Height="220"
+                                    VerticalAlignment="Top"
+                                    Padding="10"
+                                    Background="#E6222B35"
+                                    BorderBrush="#FF3D4A56"
+                                    BorderThickness="1"
+                                    CornerRadius="7"
+                                    Visibility="Collapsed">
+                                <StackPanel>
+                                    <TextBlock Text="CURRENT IMAGE" Foreground="#FF9FAAB5" FontSize="10" FontWeight="SemiBold"/>
+                                    <TextBlock x:Name="CurrentImageFileNameText" Margin="0,3,0,5" Foreground="White" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="55"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="15"/>
+                                            <RowDefinition Height="15"/>
+                                            <RowDefinition Height="15"/>
+                                            <RowDefinition Height="15"/>
+                                            <RowDefinition Height="15"/>
+                                            <RowDefinition Height="15"/>
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Text="Index:" Foreground="#FFABB4BD" FontSize="10"/>
+                                        <TextBlock x:Name="CurrentImageIndexText" Grid.Row="0" Grid.Column="1" Foreground="#FFE2E6EA" FontSize="10"/>
+                                        <TextBlock Grid.Row="1" Text="Name:" Foreground="#FFABB4BD" FontSize="10"/>
+                                        <TextBlock x:Name="CurrentImageNameText" Grid.Row="1" Grid.Column="1" Foreground="#FFE2E6EA" FontSize="10" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Row="2" Text="Edition:" Foreground="#FFABB4BD" FontSize="10"/>
+                                        <TextBlock x:Name="CurrentImageEditionText" Grid.Row="2" Grid.Column="1" Foreground="#FFE2E6EA" FontSize="10" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Row="3" Text="Arch:" Foreground="#FFABB4BD" FontSize="10"/>
+                                        <TextBlock x:Name="CurrentImageArchitectureText" Grid.Row="3" Grid.Column="1" Foreground="#FFE2E6EA" FontSize="10"/>
+                                        <TextBlock Grid.Row="4" Text="Build:" Foreground="#FFABB4BD" FontSize="10"/>
+                                        <TextBlock x:Name="CurrentImageBuildText" Grid.Row="4" Grid.Column="1" Foreground="#FFE2E6EA" FontSize="10"/>
+                                        <TextBlock Grid.Row="5" Text="Size:" Foreground="#FFABB4BD" FontSize="10"/>
+                                        <TextBlock x:Name="CurrentImageSizeText" Grid.Row="5" Grid.Column="1" Foreground="#FFE2E6EA" FontSize="10"/>
+                                    </Grid>
+                                    <Border x:Name="CurrentImageMountBadge" Margin="0,5,0,3" Padding="7,2" HorizontalAlignment="Left" BorderThickness="1" CornerRadius="3">
+                                        <TextBlock x:Name="CurrentImageMountStatusText" FontSize="9" FontWeight="SemiBold"/>
+                                    </Border>
+                                    <TextBlock Foreground="#FF9FAAB5" FontSize="9" Text="Mount path:"/>
+                                    <TextBlock x:Name="CurrentImageMountPathText" Foreground="#FFFFC107" FontSize="10" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                            </Border>
+                            <Label Content="WinPE" HorizontalAlignment="Left" Margin="10,305,0,0" Width="140" Foreground="#FFE2E2E2" VerticalAlignment="Top" Height="26"/>
                             <Button x:Name="CaptureSystemDriversButton"
         Content="Capture System Drivers"
         Click="CaptureSystemDriversButton_Click"
@@ -717,8 +762,12 @@
                                       Opacity="0.55"
                                       ShadowDepth="8"/>
                 </Border.Effect>
-                <Grid>
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <Grid Margin="0,0,8,0">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
@@ -732,8 +781,8 @@
                                    FontWeight="SemiBold"
                                    VerticalAlignment="Center"/>
                         <Button x:Name="CloseSettingsButton"
-                                Width="32"
-                                Height="32"
+                                Width="40"
+                                Height="40"
                                 HorizontalAlignment="Right"
                                 Click="CloseSettingsButton_Click"
                                 Style="{StaticResource RoundedButtonStyle}"
@@ -787,6 +836,102 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel Margin="0,0,18,0">
+                                <TextBlock Text="WinPE deployment scripts"
+                                           Foreground="#FFF5F5F5"
+                                           FontSize="16"
+                                           FontWeight="SemiBold"/>
+                                <TextBlock Margin="0,5,0,0"
+                                           Foreground="#FFBDBDBD"
+                                           TextWrapping="Wrap"
+                                           Text="Embeds and automatically launches the image apply, capture, and recovery toolkit in newly created WinPE images."/>
+                            </StackPanel>
+                            <ToggleButton x:Name="DeploymentScriptsToggle"
+                                          Grid.Column="1"
+                                          VerticalAlignment="Center"
+                                          Click="DeploymentScriptsToggle_Click"
+                                          Style="{StaticResource SettingsToggleStyle}"
+                                          ToolTip="Include the deployment toolkit in new WinPE images"
+                                          AutomationProperties.Name="WinPE deployment scripts"/>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Row="3"
+                            Margin="0,12,0,0"
+                            Padding="16"
+                            Background="#FF292929"
+                            CornerRadius="10">
+                        <StackPanel>
+                            <TextBlock Text="Workspace folders"
+                                       Foreground="#FFF5F5F5"
+                                       FontSize="16"
+                                       FontWeight="SemiBold"/>
+                            <TextBlock Margin="0,8,0,4"
+                                       Foreground="#FFBDBDBD"
+                                       Text="Mount folder"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="MountFolderTextBox"
+                                         Height="32"
+                                         Padding="8,5"
+                                         Foreground="White"
+                                         Background="#FF1E1E1E"
+                                         BorderBrush="#FF5A5A5A"
+                                         LostKeyboardFocus="WorkspaceFolderTextBox_LostKeyboardFocus"/>
+                                <Button x:Name="BrowseMountFolderButton"
+                                        Grid.Column="1"
+                                        Width="72"
+                                        Height="32"
+                                        Margin="8,0,0,0"
+                                        Content="Browse"
+                                        Click="BrowseMountFolderButton_Click"
+                                        Style="{StaticResource RoundedButtonStyle}"/>
+                            </Grid>
+                            <TextBlock Margin="0,8,0,4"
+                                       Foreground="#FFBDBDBD"
+                                       Text="WinPE folder"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="WinPeFolderTextBox"
+                                         Height="32"
+                                         Padding="8,5"
+                                         Foreground="White"
+                                         Background="#FF1E1E1E"
+                                         BorderBrush="#FF5A5A5A"
+                                         LostKeyboardFocus="WorkspaceFolderTextBox_LostKeyboardFocus"/>
+                                <Button x:Name="BrowseWinPeFolderButton"
+                                        Grid.Column="1"
+                                        Width="72"
+                                        Height="32"
+                                        Margin="8,0,0,0"
+                                        Content="Browse"
+                                        Click="BrowseWinPeFolderButton_Click"
+                                        Style="{StaticResource RoundedButtonStyle}"/>
+                            </Grid>
+                            <TextBlock x:Name="WorkspaceFolderStatusText"
+                                       Margin="0,8,0,0"
+                                       Foreground="#FFFFC107"
+                                       TextWrapping="Wrap"
+                                       Visibility="Collapsed"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Row="4"
+                            Margin="0,12,0,0"
+                            Padding="16"
+                            Background="#FF292929"
+                            CornerRadius="10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Margin="0,0,18,0">
                                 <TextBlock Text="Application updates"
                                            Foreground="#FFF5F5F5"
                                            FontSize="16"
@@ -806,13 +951,14 @@
                         </Grid>
                     </Border>
 
-                    <TextBlock Grid.Row="3"
+                    <TextBlock Grid.Row="5"
                                Margin="0,16,0,0"
                                Foreground="#FF8F8F8F"
                                FontSize="12"
                                TextWrapping="Wrap"
                                Text="DISM performance measurements are saved under Local AppData\DISM_Lab\Logs for normal and enhanced-mode comparison."/>
                 </Grid>
+                </ScrollViewer>
             </Border>
         </Grid>
     </Grid>

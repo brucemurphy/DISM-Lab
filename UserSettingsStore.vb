@@ -2,7 +2,13 @@ Imports System.IO
 Imports System.Text.Json
 
 Friend NotInheritable Class UserSettings
+    Public Const DefaultMountRootPath As String = "C:\Mount"
+    Public Const DefaultWinPeRootPath As String = "C:\WinPE"
+
     Public Property IsRealTimeModeEnabled As Boolean = False
+    Public Property IncludeDeploymentScripts As Boolean = False
+    Public Property MountRootPath As String = DefaultMountRootPath
+    Public Property WinPeRootPath As String = DefaultWinPeRootPath
 End Class
 
 Friend NotInheritable Class UserSettingsStore
@@ -29,6 +35,13 @@ Friend NotInheritable Class UserSettingsStore
                 Dim settings = JsonSerializer.Deserialize(Of UserSettings)(json)
                 If settings Is Nothing Then
                     Return New UserSettings()
+                End If
+
+                If String.IsNullOrWhiteSpace(settings.MountRootPath) Then
+                    settings.MountRootPath = UserSettings.DefaultMountRootPath
+                End If
+                If String.IsNullOrWhiteSpace(settings.WinPeRootPath) Then
+                    settings.WinPeRootPath = UserSettings.DefaultWinPeRootPath
                 End If
 
                 Return settings

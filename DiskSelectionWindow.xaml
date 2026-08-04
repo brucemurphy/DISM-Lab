@@ -11,7 +11,7 @@
         ShowInTaskbar="False">
     <Window.Resources>
         <SolidColorBrush x:Key="PanelBrush" Color="#151515" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#4C9EFB" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#FFC107" />
         <SolidColorBrush x:Key="HeaderBrush" Color="#202020" />
         <SolidColorBrush x:Key="BorderBrushDark" Color="#2A2A2A" />
 
@@ -39,10 +39,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="border" Property="Background" Value="#3FFFFFFF" />
+                                <Setter TargetName="border" Property="Background" Value="#FFFFD54F" />
+                                <Setter Property="Foreground" Value="#FF17130A" />
+                                <Setter TargetName="border" Property="BorderBrush" Value="#FFFFC107" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="border" Property="Background" Value="#5FFFFFFF" />
+                                <Setter TargetName="border" Property="Background" Value="#FFFFA000" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="border" Property="Background" Value="#FF2D2D2D" />
@@ -92,11 +94,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="ItemBorder" Property="Background" Value="#263447" />
-                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#33FFC107" />
+                                <Setter Property="Foreground" Value="#FFFFC107" />
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ItemBorder" Property="Background" Value="#1F2531" />
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#1FFFC107" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.5" />

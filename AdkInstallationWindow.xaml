@@ -37,10 +37,12 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#3E3E42"/>
+                    <Setter Property="Background" Value="#FFFFD54F"/>
+                    <Setter Property="Foreground" Value="#FF17130A"/>
+                    <Setter Property="BorderBrush" Value="#FFFFC107"/>
                 </Trigger>
                 <Trigger Property="IsPressed" Value="True">
-                    <Setter Property="Background" Value="#007ACC"/>
+                    <Setter Property="Background" Value="#FFFFA000"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -137,7 +139,7 @@
                             x:Name="CancelBtn"/>
                     <Button Content="Install ADK" 
                             Width="120" 
-                            Background="#007ACC" 
+                            Background="#2D2D30"
                             Click="InstallButton_Click"
                             x:Name="InstallBtn"/>
                 </StackPanel>

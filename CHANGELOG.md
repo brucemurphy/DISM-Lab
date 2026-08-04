@@ -16,6 +16,28 @@ All notable changes to DISM Lab are recorded here. Releases follow Semantic Vers
 
 - None.
 
+## 1.1.0 - 2026-08-04
+
+### New Features
+
+- Add an optional embedded WinPE deployment toolkit for applying WIM and FFU images, capturing WIM images, and configuring recovery partitions.
+- Add configurable Mount and WinPE workspace folders with persisted defaults, validation, browsing, and active-workflow locking.
+- Add a current-image summary card showing the selected image index, name, edition, architecture, build, size, mount state, and mount path.
+- Add WIM and ESD image selection through the redesigned image workflow.
+
+### Bug Fixes
+
+- Keep workspace paths locked while mount content, mounted images, DISM operations, or WinPE creation workflows are active.
+- Improve WinPE deployment menu image discovery, input validation, path handling, startup behavior, and reboot handling.
+- Prevent stale asynchronous image metadata from replacing details for a newer index selection.
+- Standardize disabled button backgrounds, borders, text colors, and cursors across the interface.
+
+### Other Changes
+
+- Embed deployment scripts into the single-file executable while retaining editable source copies in the repository.
+- Redesign and space the left-side image and WinPE controls for a clearer task flow.
+- Expand Settings with WinPE deployment and workspace configuration controls.
+
 ## 1.0.1 - 2026-08-03
 
 ### New Features

@@ -1,6 +1,6 @@
 # Publishing DISM Lab
 
-DISM Lab is distributed as a self-contained Windows x64 portable ZIP through GitHub Releases. Users extract the ZIP and run `DISM Lab.exe`; no installer or separate .NET Desktop Runtime is required.
+DISM Lab is distributed as a compressed, self-contained, single-file Windows x64 executable inside a portable ZIP. Users extract and run `DISM Lab.exe`; no installer, supporting application files, or separate .NET Desktop Runtime is required.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ DISM Lab is distributed as a self-contained Windows x64 portable ZIP through Git
 7. Enter Markdown lists for **New Features**, **Bug Fixes**, and **Other Changes**. Use `None.` for an empty category.
 8. Run the workflow and confirm every step succeeds.
 
-The workflow validates that the requested version matches `VersionPrefix`, restores and publishes for `win-x64`, creates the ZIP, writes its SHA-256 sidecar, generates categorized release notes, creates the tag, and publishes the GitHub Release.
+The workflow validates that the requested version matches `VersionPrefix`, restores and publishes a compressed single-file executable for `win-x64`, verifies that the publish output contains only `DISM Lab.exe`, creates the ZIP, writes its SHA-256 sidecar, generates categorized release notes, creates the tag, and publishes the GitHub Release.
 
 ## Release assets
 
@@ -31,7 +31,7 @@ For version `v1.0.0`, the release must contain exactly these update assets:
 - `DISM-Lab-v1.0.0-win-x64.zip`
 - `DISM-Lab-v1.0.0-win-x64.zip.sha256`
 
-The ZIP contains the files from the publish directory at its root. `DISM Lab.exe` must therefore be at the ZIP root rather than inside another folder.
+The ZIP contains exactly one application file: `DISM Lab.exe` at the archive root. The .NET runtime and native dependencies are bundled into that executable and extracted internally by .NET when required.
 
 The checksum file uses this format:
 
@@ -45,7 +45,7 @@ Do not rename assets after publishing. The updater selects assets by their exact
 2. Confirm the tag, title, ZIP, and checksum all use the same version.
 3. Download both assets from the public release page.
 4. Recalculate the ZIP SHA-256 hash and compare it with the sidecar.
-5. Extract the ZIP into a new writable folder.
+5. Confirm the ZIP contains only `DISM Lab.exe`, then extract it into a new writable folder.
 6. Run `DISM Lab.exe` and approve elevation.
 7. Confirm the title displays the released version.
 8. Open **Settings**, use **Check for updates**, and confirm it reports that the current version is latest.

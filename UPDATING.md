@@ -21,7 +21,7 @@ Update checks do not silently install releases. Startup network/API failures rem
 
 ## Release contract
 
-The service currently supports stable self-contained `win-x64` releases only. For a version such as `1.2.3`, GitHub must provide:
+The service currently supports stable, self-contained, single-file `win-x64` releases only. For a version such as `1.2.3`, GitHub must provide:
 
 - Tag: `v1.2.3`
 - Package: `DISM-Lab-v1.2.3-win-x64.zip`

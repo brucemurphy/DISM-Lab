@@ -9,10 +9,10 @@ DISM Lab 1.0 is distributed from [GitHub Releases](https://github.com/brucemurph
 
 1. Download `DISM-Lab-v1.0.0-win-x64.zip` from the latest release.
 2. Optionally verify it using the accompanying `.sha256` file.
-3. Extract the entire ZIP into a writable folder.
+3. Extract the single `DISM Lab.exe` file into a writable folder.
 4. Run `DISM Lab.exe` and approve the administrator prompt.
 
-No installer or separate .NET Desktop Runtime is required. Keep all published files together in the extracted folder.
+No installer, supporting application files, or separate .NET Desktop Runtime is required. All runtime dependencies are bundled into the executable.
 
 ## Application Updates
 
@@ -38,6 +38,7 @@ Accepted updates are downloaded over HTTPS, verified against the release's SHA-2
 
 ### Creating Windows PE Boot Media
 - **Build WinPE Images** - Create a lightweight Windows PE boot environment by choosing your architecture (x64 or arm64) and optional components like PowerShell, WMI, or networking tools
+- **Include Deployment Scripts** - Optionally embed a startup menu for applying WIM/FFU images, capturing WIM images, and configuring Windows Recovery Environment
 - **Create Bootable USB Drives** - Turn any USB drive into a bootable Windows PE recovery drive with separate partitions for the boot files and your Windows images
 
 ## How to Use It
@@ -62,10 +63,13 @@ Accepted updates are downloaded over HTTPS, verified against the release's SHA-2
 1. Click "Create WinPE"
 2. Choose your architecture (x64 or arm64)
 3. Optionally add components like PowerShell
-4. Click Finish and wait for it to build
-5. Click "Create USB"
-6. Select your USB drive (WARNING: this will erase everything on it!)
-7. Wait for the files to copy
+4. In **Settings**, enable **WinPE deployment scripts** if you want WinPE to launch the deployment toolkit automatically (it is off by default)
+5. Click Finish and wait for it to build
+6. Click "Create USB"
+7. Select your USB drive (WARNING: this will erase everything on it!)
+8. Place WIM or FFU files in the `Images` folder on the USB Images partition
+
+The deployment toolkit is embedded in the WinPE image at `X:\Scripts`, so it does not depend on the USB boot partition's drive letter. Image apply and recovery operations can erase and repartition the selected target disk; review every confirmation carefully.
 
 **To backup your computer's drivers:**
 1. Click "Capture System Drivers"
@@ -78,6 +82,13 @@ Accepted updates are downloaded over HTTPS, verified against the release's SHA-2
 - Administrator privileges (the app will ask to restart as admin if needed)
 - For WinPE creation: Windows ADK and Windows PE add-on installed
 - Internet connection (optional - for the Bing wallpaper background)
+
+## Workspace Folder Settings
+- **Mount folder** defaults to `C:\Mount` and is used for Windows image mount operations.
+- **WinPE folder** defaults to `C:\WinPE` and contains the WinPE `Mount`, `media`, and manifest structure.
+- Both locations can be changed from **Settings** before starting a mount or WinPE workflow. WinPE paths cannot contain spaces.
+- Folder controls and Settings access are locked while an operation, mounted image, detected mount content, or WinPE creation workflow is active.
+- Changing a location starts using the selected workspace; existing files are not moved.
 
 ## Tips
 - The green activity light shows when DISM is working

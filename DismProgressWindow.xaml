@@ -7,6 +7,20 @@
         MaxHeight="200" MaxWidth="200"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#BF000000"/>
+            <Setter Property="Foreground" Value="#FFFAFAFA"/>
+            <Setter Property="BorderBrush" Value="#FF3F3F3F"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#FFFFD54F"/>
+                    <Setter Property="Foreground" Value="#FF17130A"/>
+                    <Setter Property="BorderBrush" Value="#FFFFC107"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>

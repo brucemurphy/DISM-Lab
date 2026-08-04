@@ -31,6 +31,8 @@ Class MainWindow
 
     ' Size-based progress fields
     Private _imageSizes As New Dictionary(Of Integer, Long)()
+    Private ReadOnly _wimImageMetadata As New Dictionary(Of Integer, WimImageInfo)()
+    Private _selectedWimDetailGeneration As Integer
     Private _expectedMountSizeBytes As Long = 0
     Private _mountMonitorCts As CancellationTokenSource
 
@@ -52,15 +54,64 @@ Class MainWindow
 
     ' App data paths
     Private Shared ReadOnly AppStorageRoot As String = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DISM_Lab")
-    Private Shared ReadOnly WinPeRootDirectory As String = ResolveWinPeRootDirectory()
-    Private Shared ReadOnly ManifestFilePath As String = Path.Combine(WinPeRootDirectory, "labpe-manifest.json")
-    Private Shared ReadOnly WinPeMountDirectory As String = Path.Combine(WinPeRootDirectory, "Mount")
-    Private Shared ReadOnly WinPeMediaDirectory As String = Path.Combine(WinPeRootDirectory, "media")
     Private Shared ReadOnly LogsDirectory As String = Path.Combine(AppStorageRoot, "Logs")
     Private Shared ReadOnly ImageLogRelativeFolder As String = Path.Combine("DISM_Lab", "Logs")
     Private Const ImageLogFileName As String = "labpe.log"
-    Private Shared ReadOnly DefaultMountDirectory As String = "C:\Mount"
     Private ReadOnly _logSyncRoot As New Object()
+
+    Private ReadOnly Property WinPeRootDirectory As String
+        Get
+            Return _userSettings.WinPeRootPath
+        End Get
+    End Property
+
+    Private ReadOnly Property ManifestFilePath As String
+        Get
+            Return Path.Combine(WinPeRootDirectory, "labpe-manifest.json")
+        End Get
+    End Property
+
+    Private ReadOnly Property WinPeMountDirectory As String
+        Get
+            Return Path.Combine(WinPeRootDirectory, "Mount")
+        End Get
+    End Property
+
+    Private ReadOnly Property WinPeMediaDirectory As String
+        Get
+            Return Path.Combine(WinPeRootDirectory, "media")
+        End Get
+    End Property
+
+    Private ReadOnly Property MountFolderInput As TextBox
+        Get
+            Return TryCast(FindName("MountFolderTextBox"), TextBox)
+        End Get
+    End Property
+
+    Private ReadOnly Property WinPeFolderInput As TextBox
+        Get
+            Return TryCast(FindName("WinPeFolderTextBox"), TextBox)
+        End Get
+    End Property
+
+    Private ReadOnly Property MountFolderBrowseButton As Button
+        Get
+            Return TryCast(FindName("BrowseMountFolderButton"), Button)
+        End Get
+    End Property
+
+    Private ReadOnly Property WinPeFolderBrowseButton As Button
+        Get
+            Return TryCast(FindName("BrowseWinPeFolderButton"), Button)
+        End Get
+    End Property
+
+    Private ReadOnly Property WorkspaceFolderStatus As TextBlock
+        Get
+            Return TryCast(FindName("WorkspaceFolderStatusText"), TextBlock)
+        End Get
+    End Property
 
     ' Fields for driver/update selection UI
     Private _selectedDriverFiles As New List(Of String)()
@@ -108,6 +159,7 @@ Class MainWindow
     }
     Private ReadOnly _selectedOptionalComponents As New List(Of String)()
     Private _selectedWinPeLanguage As String = "en-us" ' Default language
+    Private _includeDeploymentScripts As Boolean
     Private _wimListBackup As List(Of Object)
     Private _logListBackup As List(Of Object)
     Private _hiddenButtonStates As Dictionary(Of UIElement, Visibility)
@@ -124,33 +176,12 @@ Class MainWindow
         End Get
     End Property
 
-    Private Shared Function ResolveWinPeRootDirectory() As String
-        Dim systemRoot = Path.GetPathRoot(Environment.SystemDirectory)
-        Dim preferredRoot = Path.Combine(systemRoot, "WinPE")
-        If Not ContainsWhitespace(preferredRoot) Then
-            Return preferredRoot
-        End If
-
-        Dim preferred = Path.Combine(AppStorageRoot, "WinPE")
-        If Not ContainsWhitespace(preferred) Then
-            Return preferred
-        End If
-
-        Dim commonDataBase = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "DISM_Lab")
-        Dim commonDataPath = Path.Combine(commonDataBase, "WinPE")
-        If Not ContainsWhitespace(commonDataPath) Then
-            Return commonDataPath
-        End If
-
-        Return Path.Combine(systemRoot, "DISM_Lab", "WinPE")
-    End Function
-
     Private Shared Function ContainsWhitespace(value As String) As Boolean
         Return Not String.IsNullOrEmpty(value) AndAlso value.Any(AddressOf Char.IsWhiteSpace)
     End Function
 
     Private Function GetConfiguredMountDirectory() As String
-        Return DefaultMountDirectory
+        Return _userSettings.MountRootPath
     End Function
 
     Private Function EnsureMountDirectory(ByRef mountPath As String, Optional showErrors As Boolean = True) As Boolean
@@ -182,12 +213,29 @@ Class MainWindow
         Public Property Architecture As String
         Public Property GeneratedOn As Date?
         Public Property OptionalComponents As List(Of String)
+        Public Property IncludesDeploymentScripts As Boolean
+    End Class
+
+    Private Class WimImageInfo
+        Public Property Index As Integer
+        Public Property Name As String
+        Public Property Description As String
+        Public Property Edition As String
+        Public Property Architecture As String
+        Public Property Build As String
+        Public Property SizeBytes As Long?
     End Class
 
     Private Async Sub MainWindow_Loaded(sender As Object, e As RoutedEventArgs) Handles Me.Loaded
         Me.Title = $"{BaseTitle} v{_updateService.GetCurrentVersion()}"
         SettingsVersionText.Text = $"Current version: {_updateService.GetCurrentVersion()}"
         RealTimeModeToggle.IsChecked = _userSettings.IsRealTimeModeEnabled
+        Dim deploymentScriptsToggle = TryCast(FindName("DeploymentScriptsToggle"), Controls.Primitives.ToggleButton)
+        If deploymentScriptsToggle IsNot Nothing Then
+            deploymentScriptsToggle.IsChecked = _userSettings.IncludeDeploymentScripts
+        End If
+        MountFolderInput.Text = _userSettings.MountRootPath
+        WinPeFolderInput.Text = _userSettings.WinPeRootPath
         EnableDarkTitleBar()
         InitDismIndicators()
         Await SetBingWallpaperAsync()
@@ -201,6 +249,7 @@ Class MainWindow
         RefreshLabPeManifest()
         StartWinPeFolderWatcher()
         StartWinPEMountDirWatcher()
+        UpdateWorkspaceFolderControlsState()
 
         ShowPreviousUpdateError()
         Await CheckForUpdatesAsync(isManualCheck:=False)
@@ -211,6 +260,7 @@ Class MainWindow
     End Sub
 
     Private Sub OpenSettingsButton_Click(sender As Object, e As RoutedEventArgs)
+        UpdateWorkspaceFolderControlsState()
         MainGrid.IsEnabled = False
         OpenSettingsButton.IsEnabled = False
         SettingsOverlay.Visibility = Visibility.Visible
@@ -230,8 +280,10 @@ Class MainWindow
     Private Sub CloseSettingsOverlay()
         SettingsOverlay.Visibility = Visibility.Collapsed
         MainGrid.IsEnabled = True
-        OpenSettingsButton.IsEnabled = True
-        OpenSettingsButton.Focus()
+        UpdateWorkspaceFolderControlsState()
+        If OpenSettingsButton.IsEnabled Then
+            OpenSettingsButton.Focus()
+        End If
     End Sub
 
     Private Sub RealTimeModeToggle_Click(sender As Object, e As RoutedEventArgs)
@@ -243,6 +295,212 @@ Class MainWindow
         Catch ex As Exception
             _userSettings.IsRealTimeModeEnabled = previousValue
             RealTimeModeToggle.IsChecked = previousValue
+            MessageBox.Show("The setting could not be saved." & Environment.NewLine & Environment.NewLine & ex.Message,
+                            "DISM Lab Settings",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error)
+        End Try
+    End Sub
+
+    Private Sub BrowseMountFolderButton_Click(sender As Object, e As RoutedEventArgs)
+        BrowseForWorkspaceFolder(MountFolderInput, "Select the default DISM mount folder")
+    End Sub
+
+    Private Sub BrowseWinPeFolderButton_Click(sender As Object, e As RoutedEventArgs)
+        BrowseForWorkspaceFolder(WinPeFolderInput, "Select the WinPE workspace folder")
+    End Sub
+
+    Private Sub BrowseForWorkspaceFolder(target As TextBox, description As String)
+        Using dialog As New WinForms.FolderBrowserDialog() With {
+            .Description = description,
+            .SelectedPath = target.Text,
+            .ShowNewFolderButton = True
+        }
+            If dialog.ShowDialog() = WinForms.DialogResult.OK Then
+                target.Text = dialog.SelectedPath
+                ApplyWorkspaceFolderSettings()
+            End If
+        End Using
+    End Sub
+
+    Private Sub WorkspaceFolderTextBox_LostKeyboardFocus(sender As Object, e As KeyboardFocusChangedEventArgs)
+        ApplyWorkspaceFolderSettings()
+    End Sub
+
+    Private Sub ApplyWorkspaceFolderSettings()
+        Dim mountPath As String = Nothing
+        Dim winPePath As String = Nothing
+        Dim validationError As String = Nothing
+
+        If Not TryNormalizeWorkspacePath(MountFolderInput.Text, "Mount folder", allowWhitespace:=True, normalizedPath:=mountPath, validationError:=validationError) OrElse
+           Not TryNormalizeWorkspacePath(WinPeFolderInput.Text, "WinPE folder", allowWhitespace:=False, normalizedPath:=winPePath, validationError:=validationError) Then
+            ShowWorkspaceFolderStatus(validationError, isError:=True)
+            Return
+        End If
+
+        If PathsOverlap(mountPath, winPePath) Then
+            ShowWorkspaceFolderStatus("The Mount and WinPE folders must be separate and cannot contain one another.", isError:=True)
+            Return
+        End If
+
+        Dim mountChanged = Not String.Equals(mountPath, _userSettings.MountRootPath, StringComparison.OrdinalIgnoreCase)
+        Dim winPeChanged = Not String.Equals(winPePath, _userSettings.WinPeRootPath, StringComparison.OrdinalIgnoreCase)
+        If Not mountChanged AndAlso Not winPeChanged Then
+            MountFolderInput.Text = mountPath
+            WinPeFolderInput.Text = winPePath
+            ShowWorkspaceFolderStatus(Nothing, isError:=False)
+            Return
+        End If
+
+        If IsWorkspacePathChangeLocked() Then
+            MountFolderInput.Text = _userSettings.MountRootPath
+            WinPeFolderInput.Text = _userSettings.WinPeRootPath
+            ShowWorkspaceFolderStatus("Folder locations are locked until the active mount or WinPE workflow is completed.", isError:=True)
+            UpdateWorkspaceFolderControlsState()
+            Return
+        End If
+
+        Dim previousMountPath = _userSettings.MountRootPath
+        Dim previousWinPePath = _userSettings.WinPeRootPath
+
+        Try
+            Directory.CreateDirectory(mountPath)
+            Directory.CreateDirectory(winPePath)
+            Directory.CreateDirectory(Path.Combine(winPePath, "Mount"))
+
+            If winPeChanged Then
+                StopWinPeFolderWatcher()
+                StopWinPEMountDirWatcher()
+            End If
+
+            _userSettings.MountRootPath = mountPath
+            _userSettings.WinPeRootPath = winPePath
+            UserSettingsStore.Save(_userSettings)
+
+            MountFolderInput.Text = mountPath
+            WinPeFolderInput.Text = winPePath
+
+            If winPeChanged Then
+                StartWinPeFolderWatcher()
+                StartWinPEMountDirWatcher()
+                RefreshLabPeManifest()
+            End If
+
+            UpdateMountDirState()
+            ShowWorkspaceFolderStatus("Folder locations saved. Existing files were not moved.", isError:=False)
+        Catch ex As Exception
+            _userSettings.MountRootPath = previousMountPath
+            _userSettings.WinPeRootPath = previousWinPePath
+            MountFolderInput.Text = previousMountPath
+            WinPeFolderInput.Text = previousWinPePath
+            StartWinPeFolderWatcher()
+            StartWinPEMountDirWatcher()
+            ShowWorkspaceFolderStatus("The folder locations could not be saved: " & ex.Message, isError:=True)
+        End Try
+    End Sub
+
+    Private Shared Function TryNormalizeWorkspacePath(value As String,
+                                                       displayName As String,
+                                                       allowWhitespace As Boolean,
+                                                       ByRef normalizedPath As String,
+                                                       ByRef validationError As String) As Boolean
+        If String.IsNullOrWhiteSpace(value) Then
+            validationError = displayName & " is required."
+            Return False
+        End If
+
+        Try
+            If Not Path.IsPathFullyQualified(value.Trim()) Then
+                validationError = displayName & " must be an absolute path."
+                Return False
+            End If
+
+            normalizedPath = Path.GetFullPath(value.Trim())
+            Dim root = Path.GetPathRoot(normalizedPath)
+            If normalizedPath.Length > root.Length Then
+                normalizedPath = normalizedPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            End If
+
+            If Not allowWhitespace AndAlso ContainsWhitespace(normalizedPath) Then
+                validationError = "The WinPE folder cannot contain spaces because copype does not support them reliably."
+                Return False
+            End If
+
+            Return True
+        Catch ex As Exception
+            validationError = displayName & " is not a valid path: " & ex.Message
+            Return False
+        End Try
+    End Function
+
+    Private Shared Function PathsOverlap(firstPath As String, secondPath As String) As Boolean
+        Dim first = firstPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) & Path.DirectorySeparatorChar
+        Dim second = secondPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) & Path.DirectorySeparatorChar
+        Return first.StartsWith(second, StringComparison.OrdinalIgnoreCase) OrElse
+               second.StartsWith(first, StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    Private Function IsWorkspacePathChangeLocked() As Boolean
+        If _operationInProgress OrElse _isMounted OrElse _winPeState <> WinPeWizardState.Idle Then
+            Return True
+        End If
+
+        Return DirectoryHasContent(_userSettings.MountRootPath) OrElse
+               DirectoryHasContent(Path.Combine(_userSettings.WinPeRootPath, "Mount"))
+    End Function
+
+    Private Shared Function DirectoryHasContent(directoryPath As String) As Boolean
+        Try
+            Return Directory.Exists(directoryPath) AndAlso Directory.EnumerateFileSystemEntries(directoryPath).Any()
+        Catch
+            Return True
+        End Try
+    End Function
+
+    Private Sub UpdateWorkspaceFolderControlsState()
+        Dim isLocked = IsWorkspacePathChangeLocked()
+
+        If MountFolderInput IsNot Nothing Then MountFolderInput.IsEnabled = Not isLocked
+        If WinPeFolderInput IsNot Nothing Then WinPeFolderInput.IsEnabled = Not isLocked
+        If MountFolderBrowseButton IsNot Nothing Then MountFolderBrowseButton.IsEnabled = Not isLocked
+        If WinPeFolderBrowseButton IsNot Nothing Then WinPeFolderBrowseButton.IsEnabled = Not isLocked
+
+        If OpenSettingsButton IsNot Nothing AndAlso SettingsOverlay.Visibility <> Visibility.Visible Then
+            OpenSettingsButton.IsEnabled = Not isLocked
+        End If
+
+        If isLocked Then
+            ShowWorkspaceFolderStatus("Folder locations are locked until the active mount or WinPE workflow is completed.", isError:=False)
+        ElseIf WorkspaceFolderStatus IsNot Nothing AndAlso
+               WorkspaceFolderStatus.Text.StartsWith("Folder locations are locked", StringComparison.Ordinal) Then
+            ShowWorkspaceFolderStatus(Nothing, isError:=False)
+        End If
+    End Sub
+
+    Private Sub ShowWorkspaceFolderStatus(message As String, isError As Boolean)
+        If WorkspaceFolderStatus Is Nothing Then
+            Return
+        End If
+
+        WorkspaceFolderStatus.Text = If(message, String.Empty)
+        WorkspaceFolderStatus.Foreground = New SolidColorBrush(If(isError, Colors.OrangeRed, Color.FromRgb(&HFF, &HC1, &H7)))
+        WorkspaceFolderStatus.Visibility = If(String.IsNullOrWhiteSpace(message), Visibility.Collapsed, Visibility.Visible)
+    End Sub
+
+    Private Sub DeploymentScriptsToggle_Click(sender As Object, e As RoutedEventArgs)
+        Dim deploymentScriptsToggle = TryCast(sender, Controls.Primitives.ToggleButton)
+        If deploymentScriptsToggle Is Nothing Then
+            Return
+        End If
+
+        Dim previousValue = _userSettings.IncludeDeploymentScripts
+        _userSettings.IncludeDeploymentScripts = deploymentScriptsToggle.IsChecked = True
+
+        Try
+            UserSettingsStore.Save(_userSettings)
+        Catch ex As Exception
+            _userSettings.IncludeDeploymentScripts = previousValue
+            deploymentScriptsToggle.IsChecked = previousValue
             MessageBox.Show("The setting could not be saved." & Environment.NewLine & Environment.NewLine & ex.Message,
                             "DISM Lab Settings",
                             MessageBoxButton.OK,
@@ -990,8 +1248,8 @@ Class MainWindow
         End If
 
         Dim dlg As New OpenFileDialog() With {
-            .Filter = "WIM Images|*.wim",
-            .Title = "Select WIM Image",
+            .Filter = "Windows Images (*.wim;*.esd)|*.wim;*.esd|WIM Images (*.wim)|*.wim|ESD Images (*.esd)|*.esd",
+            .Title = "Select WIM or ESD Image",
             .CheckFileExists = True,
             .Multiselect = False
         }
@@ -1004,6 +1262,7 @@ Class MainWindow
                 UpdateWindowTitle()
                 WimImagesListBox.Visibility = Visibility.Visible
                 _imageSizes.Clear()
+                _wimImageMetadata.Clear()
                 Await LoadWimInfoAsync()
                 RestoreMountButtonState()
             Finally
@@ -1104,6 +1363,14 @@ Class MainWindow
 
     Private Sub CommitCurrent(idx As Integer?, name As String, desc As String, sizeBytes As Long?)
         If idx.HasValue AndAlso Not String.IsNullOrWhiteSpace(name) Then
+            Dim metadata As New WimImageInfo With {
+                .Index = idx.Value,
+                .Name = name,
+                .Description = desc,
+                .SizeBytes = sizeBytes
+            }
+            _wimImageMetadata(idx.Value) = metadata
+
             Dim display = $"Index {idx.Value}: {name}" &
                           If(Not String.IsNullOrWhiteSpace(desc) AndAlso desc <> name, $" - {desc}", "") &
                           If(sizeBytes.HasValue, $" ({FormatBytes(sizeBytes.Value)})", "")
@@ -1164,6 +1431,7 @@ Class MainWindow
     ' Disable ALL action buttons and controls during operations
     Private Sub DisableAllControls()
         _operationInProgress = True
+        UpdateWorkspaceFolderControlsState()
 
         ' Disable all action buttons
         SetActionButtonsEnabled(False)
@@ -1181,6 +1449,7 @@ Class MainWindow
     ' Re-enable controls based on current state
     Private Sub EnableAllControls()
         _operationInProgress = False
+        UpdateWorkspaceFolderControlsState()
 
         If WimImagesListBox IsNot Nothing Then WimImagesListBox.IsEnabled = True
 
@@ -1836,6 +2105,7 @@ Class MainWindow
         UpdateActionButtonsState()
         UpdateMountDirState()
         UpdateOpenMountFolderButtonState() ' ✅ This updates the Open Mount Folder button
+        UpdateWindowTitle()
     End Sub
 
     Private Sub EnsureDefaultWimSelection()
@@ -1869,16 +2139,70 @@ Class MainWindow
     End Sub
 
     Private Sub UpdateWindowTitle()
-        ' Update only the TitleLabel in the UI (standalone, no window title reference)
-        If TitleLabel IsNot Nothing Then
-            If String.IsNullOrEmpty(_wimPath) Then
-                TitleLabel.Text = ""  ' ✅ Changed from .Content to .Text
-            Else
-                Dim state = If(_isMounted, "Mounted", "Selected")
-                TitleLabel.Text = $"WIM File ({state}): {_wimPath}"  ' ✅ Changed from .Content to .Text
-            End If
+        Dim card = TryCast(FindName("CurrentImageCard"), Border)
+        Dim fileNameText = TryCast(FindName("CurrentImageFileNameText"), TextBlock)
+        Dim indexText = TryCast(FindName("CurrentImageIndexText"), TextBlock)
+        Dim nameText = TryCast(FindName("CurrentImageNameText"), TextBlock)
+        Dim editionText = TryCast(FindName("CurrentImageEditionText"), TextBlock)
+        Dim architectureText = TryCast(FindName("CurrentImageArchitectureText"), TextBlock)
+        Dim buildText = TryCast(FindName("CurrentImageBuildText"), TextBlock)
+        Dim sizeText = TryCast(FindName("CurrentImageSizeText"), TextBlock)
+        Dim mountBadge = TryCast(FindName("CurrentImageMountBadge"), Border)
+        Dim mountStatusText = TryCast(FindName("CurrentImageMountStatusText"), TextBlock)
+        Dim mountPathText = TryCast(FindName("CurrentImageMountPathText"), TextBlock)
+
+        If card Is Nothing OrElse fileNameText Is Nothing OrElse indexText Is Nothing OrElse
+           nameText Is Nothing OrElse editionText Is Nothing OrElse architectureText Is Nothing OrElse
+           buildText Is Nothing OrElse sizeText Is Nothing OrElse mountBadge Is Nothing OrElse
+           mountStatusText Is Nothing OrElse mountPathText Is Nothing Then
+            Return
         End If
+
+        Dim selectedItem = TryCast(WimImagesListBox?.SelectedItem, ListBoxItem)
+        Dim selectedIndex As Integer
+        If String.IsNullOrWhiteSpace(_wimPath) OrElse
+           selectedItem Is Nothing OrElse
+           Not Integer.TryParse(Convert.ToString(selectedItem.Tag), selectedIndex) OrElse
+           Not _wimImageMetadata.ContainsKey(selectedIndex) Then
+            card.Visibility = Visibility.Collapsed
+            Return
+        End If
+
+        Dim metadata = _wimImageMetadata(selectedIndex)
+        Dim fileName = Path.GetFileName(_wimPath)
+        fileNameText.Text = fileName
+        fileNameText.ToolTip = _wimPath
+        indexText.Text = metadata.Index.ToString()
+        nameText.Text = DisplayMetadataValue(metadata.Name)
+        nameText.ToolTip = metadata.Name
+        editionText.Text = DisplayMetadataValue(metadata.Edition)
+        editionText.ToolTip = metadata.Edition
+        architectureText.Text = DisplayMetadataValue(metadata.Architecture)
+        buildText.Text = DisplayMetadataValue(metadata.Build)
+        sizeText.Text = If(metadata.SizeBytes.HasValue, FormatBytes(metadata.SizeBytes.Value), "—")
+
+        Dim mountPath = GetConfiguredMountDirectory()
+        mountPathText.Text = mountPath
+        mountPathText.ToolTip = mountPath
+
+        If _isMounted Then
+            mountStatusText.Text = "MOUNTED"
+            mountStatusText.Foreground = New SolidColorBrush(Color.FromRgb(&H70, &HE0, &HA0))
+            mountBadge.BorderBrush = New SolidColorBrush(Color.FromRgb(&H35, &HB9, &H78))
+            mountBadge.Background = New SolidColorBrush(Color.FromArgb(&H30, &H35, &HB9, &H78))
+        Else
+            mountStatusText.Text = "SELECTED"
+            mountStatusText.Foreground = New SolidColorBrush(Color.FromRgb(&HFF, &HD5, &H4F))
+            mountBadge.BorderBrush = New SolidColorBrush(Color.FromRgb(&HFF, &HC1, &H7))
+            mountBadge.Background = New SolidColorBrush(Color.FromArgb(&H28, &HFF, &HC1, &H7))
+        End If
+
+        card.Visibility = Visibility.Visible
     End Sub
+
+    Private Shared Function DisplayMetadataValue(value As String) As String
+        Return If(String.IsNullOrWhiteSpace(value), "—", value)
+    End Function
 
     ' This should be called in UpdateActionButtonsState
     Private Sub UpdateOpenMountFolderButtonState()
@@ -2168,12 +2492,94 @@ Class MainWindow
         Return True
     End Function
 
-    Private Sub WimImagesListBox_SelectionChanged(sender As Object, e As SelectionChangedEventArgs)
+    Private Async Sub WimImagesListBox_SelectionChanged(sender As Object, e As SelectionChangedEventArgs)
         If _winPeState <> WinPeWizardState.Idle Then
             Return
         End If
+
         UpdateActionButtonsState()
+
+        Dim selectedItem = TryCast(WimImagesListBox.SelectedItem, ListBoxItem)
+        Dim index As Integer
+        If selectedItem Is Nothing OrElse Not Integer.TryParse(Convert.ToString(selectedItem.Tag), index) Then
+            Interlocked.Increment(_selectedWimDetailGeneration)
+            UpdateWindowTitle()
+            Return
+        End If
+
+        Dim generation = Interlocked.Increment(_selectedWimDetailGeneration)
+        UpdateWindowTitle()
+        Await LoadSelectedWimDetailsAsync(index, generation)
     End Sub
+
+    Private Async Function LoadSelectedWimDetailsAsync(index As Integer, generation As Integer) As Task
+        If String.IsNullOrWhiteSpace(_wimPath) OrElse Not _wimImageMetadata.ContainsKey(index) Then
+            Return
+        End If
+
+        Dim result = Await RunDismSimpleAsync($"/Get-WimInfo /WimFile:""{_wimPath}"" /Index:{index}")
+        If result.ExitCode <> 0 OrElse generation <> _selectedWimDetailGeneration Then
+            Return
+        End If
+
+        Dim selectedItem = TryCast(WimImagesListBox.SelectedItem, ListBoxItem)
+        Dim selectedIndex As Integer
+        If selectedItem Is Nothing OrElse
+           Not Integer.TryParse(Convert.ToString(selectedItem.Tag), selectedIndex) OrElse
+           selectedIndex <> index Then
+            Return
+        End If
+
+        Dim metadata = _wimImageMetadata(index)
+        metadata.Edition = GetDismFieldValue(result.StdOut, "Edition")
+        metadata.Architecture = GetDismFieldValue(result.StdOut, "Architecture")
+
+        Dim version = GetDismFieldValue(result.StdOut, "Version")
+        Dim servicePackBuild = GetDismFieldValue(result.StdOut, "ServicePack Build")
+        metadata.Build = FormatWindowsBuild(version, servicePackBuild)
+
+        If String.IsNullOrWhiteSpace(metadata.Edition) Then
+            metadata.Edition = If(String.IsNullOrWhiteSpace(metadata.Description), metadata.Name, metadata.Description)
+        End If
+
+        UpdateWindowTitle()
+    End Function
+
+    Private Shared Function GetDismFieldValue(output As String, fieldName As String) As String
+        If String.IsNullOrWhiteSpace(output) Then
+            Return Nothing
+        End If
+
+        For Each rawLine In output.Split({ControlChars.Cr, ControlChars.Lf}, StringSplitOptions.RemoveEmptyEntries)
+            Dim separatorIndex = rawLine.IndexOf(":"c)
+            If separatorIndex <= 0 Then
+                Continue For
+            End If
+
+            Dim key = rawLine.Substring(0, separatorIndex).Trim()
+            If String.Equals(key, fieldName, StringComparison.OrdinalIgnoreCase) Then
+                Return rawLine.Substring(separatorIndex + 1).Trim()
+            End If
+        Next
+
+        Return Nothing
+    End Function
+
+    Private Shared Function FormatWindowsBuild(version As String, servicePackBuild As String) As String
+        If String.IsNullOrWhiteSpace(version) Then
+            Return servicePackBuild
+        End If
+
+        Dim parts = version.Split("."c)
+        If parts.Length >= 4 Then
+            Return parts(parts.Length - 2) & "." & parts(parts.Length - 1)
+        End If
+        If parts.Length >= 3 AndAlso Not String.IsNullOrWhiteSpace(servicePackBuild) Then
+            Return parts(parts.Length - 1) & "." & servicePackBuild
+        End If
+
+        Return version
+    End Function
 
     Private Sub UpdateActionButtonsState()
         UpdateFastOperationIndicators()
@@ -2942,6 +3348,7 @@ Class MainWindow
         ' Store ordered components for installation
         _selectedOptionalComponents.Clear()
         _selectedOptionalComponents.AddRange(orderedComponents)
+        _includeDeploymentScripts = _userSettings.IncludeDeploymentScripts
 
         ' Disable wizard controls during WinPE creation
         WinPEFinishButton.IsEnabled = False
@@ -2995,6 +3402,7 @@ Class MainWindow
 
     Private Sub EnterWinPeArchitectureSelection()
         _winPeState = WinPeWizardState.SelectingArchitecture
+        UpdateWorkspaceFolderControlsState()
         BackupListState()
         HideActionButtonsForWinPe()
         ShowWinPeWizardButtons(showNext:=True, showFinish:=False)
@@ -3112,6 +3520,7 @@ Class MainWindow
         _selectedWinPeArchitecture = Nothing
         _selectedOptionalComponents.Clear()
         _selectedWinPeLanguage = "en-us" ' Reset to default
+        _includeDeploymentScripts = False
 
         ' Hide language dropdown and label
         If WinPELanguageComboBox IsNot Nothing Then
@@ -3125,6 +3534,7 @@ Class MainWindow
         ShowWinPeWizardButtons(showNext:=False, showFinish:=False)
         RestoreListState()
         RestoreHiddenButtons()
+        UpdateWorkspaceFolderControlsState()
     End Sub
 
     Private Sub ShowWinPeWizardButtons(showNext As Boolean, showFinish As Boolean)
@@ -3504,6 +3914,14 @@ Class MainWindow
                     End If
                 End If
 
+                If _includeDeploymentScripts Then
+                    Dim scriptsAdded = Await AddDeploymentScriptsToWinPeAsync()
+                    If Not scriptsAdded Then
+                        operationFailed = True
+                        Exit Try
+                    End If
+                End If
+
                 UpdateWinPEStatus("Finalizing WinPE image...", $"Committing changes to {WinPeRootDirectory}", displayAsCreation:=True)
                 shouldCommit = True
                 operationSucceeded = True
@@ -3545,7 +3963,8 @@ Class MainWindow
             Dim manifest As New LabPeManifestInfo With {
                 .Architecture = architecture,
                 .GeneratedOn = DateTime.UtcNow,
-                .OptionalComponents = New List(Of String)(optionalComponents)
+                .OptionalComponents = New List(Of String)(optionalComponents),
+                .IncludesDeploymentScripts = _includeDeploymentScripts
             }
 
             PersistLabPeManifest(manifest)
@@ -3568,6 +3987,69 @@ Class MainWindow
             ClearWinPEStatus()
         End Try
     End Function
+
+    Private Async Function AddDeploymentScriptsToWinPeAsync() As Task(Of Boolean)
+        Dim extractionDirectory = Path.Combine(Path.GetTempPath(), $"DISMLab-Scripts-{Guid.NewGuid():N}")
+        Dim requiredFiles As String() = {
+            "Apply-Image.bat",
+            "ApplyRecovery.bat",
+            "Capture-Image.cmd",
+            "startnet.cmd",
+            "WinPEMenu.cmd"
+        }
+
+        Try
+            UpdateWinPEStatus("Adding deployment scripts...", "Embedding the toolkit in X:\Scripts", displayAsCreation:=True)
+            Await Task.Run(Sub() ExtractDeploymentScripts(extractionDirectory))
+
+            Dim missingFiles = requiredFiles.Where(Function(fileName) Not File.Exists(Path.Combine(extractionDirectory, fileName))).ToList()
+            If missingFiles.Count > 0 Then
+                Throw New InvalidDataException("Embedded deployment toolkit is missing: " & String.Join(", ", missingFiles))
+            End If
+
+            Dim targetDirectory = Path.Combine(WinPeMountDirectory, "Scripts")
+            Await Task.Run(Sub() CopyDirectoryTree(extractionDirectory, targetDirectory))
+
+            Dim systemStartnetPath = Path.Combine(WinPeMountDirectory, "Windows", "System32", "startnet.cmd")
+            File.Copy(Path.Combine(extractionDirectory, "startnet.cmd"), systemStartnetPath, True)
+            Return True
+        Catch ex As Exception
+            UpdateWinPEStatus("Failed to add deployment scripts.", ex.Message, displayAsCreation:=True)
+            MessageBox.Show($"Unable to add the deployment scripts to WinPE:{Environment.NewLine}{ex.Message}", "WinPE", MessageBoxButton.OK, MessageBoxImage.Error)
+            Return False
+        Finally
+            Try
+                If Directory.Exists(extractionDirectory) Then
+                    Directory.Delete(extractionDirectory, True)
+                End If
+            Catch ex As Exception
+                Debug.WriteLine("Unable to clean up extracted deployment scripts: " & ex.Message)
+            End Try
+        End Try
+    End Function
+
+    Private Shared Sub ExtractDeploymentScripts(destinationDirectory As String)
+        Const resourcePrefix As String = "DISM_Lab."
+        Dim assembly = GetType(MainWindow).Assembly
+        Dim resourceNames = assembly.GetManifestResourceNames().Where(Function(name) name.StartsWith(resourcePrefix, StringComparison.Ordinal)).ToList()
+        If resourceNames.Count = 0 Then
+            Throw New InvalidDataException("No embedded deployment scripts were found.")
+        End If
+
+        Directory.CreateDirectory(destinationDirectory)
+        For Each resourceName In resourceNames
+            Dim fileName = resourceName.Substring(resourcePrefix.Length)
+            Dim destinationPath = Path.Combine(destinationDirectory, fileName)
+            Using source = assembly.GetManifestResourceStream(resourceName)
+                If source Is Nothing Then
+                    Throw New InvalidDataException("Unable to read embedded resource: " & resourceName)
+                End If
+                Using destination = File.Create(destinationPath)
+                    source.CopyTo(destination)
+                End Using
+            End Using
+        Next
+    End Sub
 
     ' ==================== ENHANCED: APPLY UPDATES FUNCTIONALITY WITH SELECTION UI ====================
 
@@ -3908,6 +4390,7 @@ Class MainWindow
         End If
 
         UpdateOpenMountFolderButtonState()
+        UpdateWorkspaceFolderControlsState()
     End Sub
 
     Private Async Function MountImageForOperationAsync(mountPath As String, index As Integer, isReadOnlyMount As Boolean) As Task(Of Boolean)
@@ -4564,6 +5047,8 @@ Class MainWindow
 
         _wimPath = Nothing
         _imageSizes.Clear()
+        _wimImageMetadata.Clear()
+        Interlocked.Increment(_selectedWimDetailGeneration)
         _isMounted = False
 
         If WimImagesListBox IsNot Nothing Then
@@ -4811,7 +5296,7 @@ Class MainWindow
             MountSizeProgressTextDetail.Text = ""
             MountSizeProgressTextDetail.Visibility = Visibility.Hidden
         End If
-        If TitleLabel IsNot Nothing Then TitleLabel.Text = ""
+        UpdateWindowTitle()
         UpdateActionButtonsState()
         UpdateMountDirState()
     End Sub
