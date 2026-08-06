@@ -61,7 +61,11 @@ echo.
 set "Choice="
 set /p "Choice=Select image then press ENTER: "
 set "Result="
-for /f "tokens=1,* delims=:" %%A in ('findstr /n "^" "%IMAGE_LIST%"') do if "%%A"=="%Choice%" set "Result=%%B"
+set /a Current=0
+for /f "usebackq delims=" %%i in ("%IMAGE_LIST%") do (
+	set /a Current+=1
+	if "!Current!"=="%Choice%" set "Result=%%i"
+)
 del /f /q "%IMAGE_LIST%" >nul 2>&1
 if not defined Result (
 	echo Invalid image selection.

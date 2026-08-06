@@ -22,22 +22,20 @@ set /p vDISK=Select the Disk number where you applied your image to from the lis
 if %ERRORLEVEL%==1 goto setdisk
 if %vDISK%==0 (goto createpart)
 
-REM Loop through all drive letters
-for %%a in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    REM Get the volume label of the drive and check if it contains "Windows"
-    for /f "tokens=*" %%b in ('vol %%a: 2^>nul ^| find /i "Windows"') do (
+set "WindowsDrive="
+for %%a in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do (
+    if exist "%%a:\Windows\System32\Config\SYSTEM" (
         set "WindowsDrive=%%a"
-		echo Windows Drive Letter = %WindowsDrive%:
+        echo Windows Drive Letter = !WindowsDrive!:
     )
+)
+if not defined WindowsDrive (
+echo No offline Windows installation was found
+goto END
 )
 
 set "RecoveryDrive=none"
-for %%a in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    REM Get the volume label of the drive and check if it contains "Recovery"
-    for /f "tokens=*" %%d in ('vol %%c: 2^>nul ^| find /i "Recovery"') do (
-        set "RecoveryDrive=%%c"
-    )
-)
+if exist "R:\" set "RecoveryDrive=R"
 if "%RecoveryDrive%"=="none" (
 echo No Recovery Drive found
 goto createpart
@@ -63,7 +61,7 @@ if exist %WindowsDrive%:\Recovery\Customizations\USMT.ppkg (goto customdataimage
 
 
 :customdataimagewim
-if not exists %WindowsDrive%:\Windows\OEM\compact.txt goto hidewimrecoverytools
+if not exist %WindowsDrive%:\Windows\OEM\compact.txt goto hidewimrecoverytools
 echo Looks like you are deploying a CompactOS based image select how to deploy your custom recovery package
 echo              Y: Yes, single instance
 echo              D: Yes, but defer cleanup steps to first boot.

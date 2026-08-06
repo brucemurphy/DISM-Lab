@@ -5,8 +5,8 @@ ECHO EDT 11 - Image Capture .wim file Framework Script
 ECHO Copyright (C) Microsoft Corporation. All rights reserved.
 ECHO =========================================================
 ECHO.
-FOR %%a in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (vol %%a: 2>nul | find "Windows" >nul
-IF NOT errorlevel 1 set vWindows=%%a:)
+SET "vWindows="
+FOR %%a in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do IF EXIST "%%a:\Windows\System32\Config\SYSTEM" SET "vWindows=%%a:"
 IF "%vWindows%"=="" (ECHO 'Cannot find volume Windows'
 PAUSE
 GOTO END

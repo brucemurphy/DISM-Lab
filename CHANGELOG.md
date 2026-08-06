@@ -16,6 +16,23 @@ All notable changes to DISM Lab are recorded here. Releases follow Semantic Vers
 
 - None.
 
+## 1.1.1 - 2026-08-04
+
+### New Features
+
+- None.
+
+### Bug Fixes
+
+- Remove `findstr` and `find` dependencies that are not guaranteed in base WinPE.
+- Select deployment menu entries using only built-in `cmd.exe` control flow.
+- Detect offline Windows installations by filesystem structure while explicitly excluding the running WinPE `X:` drive.
+- Correct recovery drive discovery, delayed variable output, and invalid batch conditional syntax.
+
+### Other Changes
+
+- Audit embedded deployment scripts against base WinPE command availability.
+
 ## 1.1.0 - 2026-08-04
 
 ### New Features
