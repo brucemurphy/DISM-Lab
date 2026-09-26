@@ -415,7 +415,7 @@
                             </Grid.ColumnDefinitions>
                             <Label Content="IMAGE" HorizontalAlignment="Left" Margin="10,0,0,0" Width="140" Foreground="#FFBDBDBD" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Top" Height="26"/>
                             <Button x:Name="SelectWimButton"
-                                Content="Select WIM File"
+                                Content="Select Image File"
                                 Click="SelectWimButton_Click"
                                 Style="{StaticResource AccentRoundedButtonStyle}"
                                 Margin="10,26,10,0"
@@ -519,7 +519,7 @@
         Width="195"
         HorizontalAlignment="Center"
         VerticalAlignment="Top"
-        ToolTip="Clear current WIM selection"/>
+        ToolTip="Clear current image selection"/>
                             <Button x:Name="_CreateWinPE_Copy"
                             Content="Create WinVOS"
                             Click="CreateWinPE_Click"

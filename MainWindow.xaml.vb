@@ -22,6 +22,11 @@ Class MainWindow
     Private _updateCheckInProgress As Boolean
     Private _isMounted As Boolean = False
     Private _wimPath As String = Nothing
+    Private ReadOnly Property IsSelectedFfu As Boolean
+        Get
+            Return String.Equals(Path.GetExtension(_wimPath), ".ffu", StringComparison.OrdinalIgnoreCase)
+        End Get
+    End Property
     Private Const BaseTitle As String = "DISM Lab"
 
     ' HDD indicator
@@ -768,7 +773,7 @@ Class MainWindow
                     Dim monitorTask = MonitorUnmountDirAsync(WinPeMountDirectory, _mountMonitorCts.Token)
 
                     ' Attempt unmount with discard
-                    Await RunDismSimpleAsync($" /Unmount-WIM /MountDir:""{WinPeMountDirectory}"" /Discard")
+                    Await RunDismSimpleAsync($" /Unmount-Image /MountDir:""{WinPeMountDirectory}"" /Discard")
 
                     ' Cleanup mountpoints
                     Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
@@ -1032,7 +1037,7 @@ Class MainWindow
 
             Dim prompt = "Mount directory is not empty." & Environment.NewLine &
                          If(initialSize > 0, $"Current size: {FormatBytes(initialSize)}" & Environment.NewLine, "") &
-                         "Attempt /Unmount-WIM /Discard then /Cleanup-Mountpoints automatically?" & Environment.NewLine &
+                         "Attempt /Unmount-Image /Discard then /Cleanup-Mountpoints automatically?" & Environment.NewLine &
                          "Yes = Try discard + cleanup" & Environment.NewLine &
                          "No = Leave as is"
             Dim resp = MessageBox.Show(prompt, "Mount Directory Not Empty", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
@@ -1053,7 +1058,7 @@ Class MainWindow
                     _mountMonitorCts = New CancellationTokenSource()
                     Dim monitorTask = MonitorUnmountDirAsync(mountPath, _mountMonitorCts.Token)
 
-                    Await RunDismSimpleAsync($" /Unmount-WIM /MountDir:""" & mountPath & """ /Discard")
+                    Await RunDismSimpleAsync($" /Unmount-Image /MountDir:""" & mountPath & """ /Discard")
 
                     _mountMonitorCts.Cancel()
                     Try
@@ -1241,21 +1246,20 @@ Class MainWindow
     End Function
 
     Private Async Sub SelectWimButton_Click(sender As Object, e As RoutedEventArgs)
-        ' Don't allow WIM selection during operations
         If _operationInProgress Then
             MessageBox.Show("Please wait for the current operation to complete.", "Operation In Progress", MessageBoxButton.OK, MessageBoxImage.Information)
             Return
         End If
 
         Dim dlg As New OpenFileDialog() With {
-            .Filter = "Windows Images (*.wim;*.esd)|*.wim;*.esd|WIM Images (*.wim)|*.wim|ESD Images (*.esd)|*.esd",
-            .Title = "Select WIM or ESD Image",
+            .Filter = "Windows Images (*.wim;*.esd;*.ffu)|*.wim;*.esd;*.ffu|WIM Images (*.wim)|*.wim|ESD Images (*.esd)|*.esd|FFU Images (*.ffu)|*.ffu",
+            .Title = "Select Windows Image",
             .CheckFileExists = True,
             .Multiselect = False
         }
 
         If dlg.ShowDialog() = True Then
-            DisableAllControls() ' ✅ Disable during DISM info retrieval
+            DisableAllControls()
 
             Try
                 _wimPath = dlg.FileName
@@ -1266,7 +1270,7 @@ Class MainWindow
                 Await LoadWimInfoAsync()
                 RestoreMountButtonState()
             Finally
-                EnableAllControls() ' ✅ Re-enable after completion
+                EnableAllControls()
             End Try
         End If
     End Sub
@@ -1287,7 +1291,7 @@ Class MainWindow
 
         Dim output As String = ""
         Try
-            Dim arguments = $"/Get-WimInfo /WimFile:""{_wimPath}"""
+            Dim arguments = $"/Get-ImageInfo /ImageFile:""{_wimPath}"""
             Dim result = Await RunDismSimpleAsync(arguments)
             output = result.StdOut
 
@@ -1562,12 +1566,12 @@ Class MainWindow
 
         If Not IsDirectoryEmpty(mountPath) Then
             Dim prompt = "Mount directory is not empty." & Environment.NewLine &
-                         "Attempt /Unmount-WIM /Discard then /Cleanup-Mountpoints automatically?" & Environment.NewLine &
+                         "Attempt /Unmount-Image /Discard then /Cleanup-Mountpoints automatically?" & Environment.NewLine &
                          "Yes = Try discard + cleanup" & Environment.NewLine &
                          "No = Cancel"
             Dim resp = MessageBox.Show(prompt, "Mount Directory Not Empty", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
             If resp = MessageBoxResult.Yes Then
-                Await RunDismSimpleAsync($" /Unmount-WIM /MountDir:""" & mountPath & """ /Discard")
+                Await RunDismSimpleAsync($" /Unmount-Image /MountDir:""" & mountPath & """ /Discard")
                 Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
                 If Not IsDirectoryEmpty(mountPath) Then
                     MessageBox.Show("Directory still not empty. Aborting mount.", "DISM", MessageBoxButton.OK, MessageBoxImage.Error)
@@ -1606,7 +1610,7 @@ Class MainWindow
         _mountMonitorCts = New CancellationTokenSource()
         Dim monitorTask = MonitorMountDirAsync(mountPath, _mountMonitorCts.Token)
 
-        Dim args = String.Format("/Mount-WIM /WIMFile:""{0}"" /Index:{1} /MountDir:""{2}""", _wimPath, idx, mountPath)
+        Dim args = String.Format("/Mount-Image /ImageFile:""{0}"" /Index:{1} /MountDir:""{2}""", _wimPath, idx, mountPath)
 
         ShowMountDebugInfo(args)
 
@@ -1910,7 +1914,7 @@ Class MainWindow
         PrepareUnmountProgressUi(initialSize)
 
         Dim commitSwitch As String = If(choice = MessageBoxResult.Yes, "/Commit", "/Discard")
-        Dim unmountArgs = $"/Unmount-WIM /MountDir:""" & mountPath & """ " & commitSwitch
+        Dim unmountArgs = $"/Unmount-Image /MountDir:""" & mountPath & """ " & commitSwitch
 
         ' Start real-time folder monitoring on separate thread (countdown to zero)
         _mountMonitorCts = New CancellationTokenSource()
@@ -2517,7 +2521,7 @@ Class MainWindow
             Return
         End If
 
-        Dim result = Await RunDismSimpleAsync($"/Get-WimInfo /WimFile:""{_wimPath}"" /Index:{index}")
+        Dim result = Await RunDismSimpleAsync($"/Get-ImageInfo /ImageFile:""{_wimPath}"" /Index:{index}")
         If result.ExitCode <> 0 OrElse generation <> _selectedWimDetailGeneration Then
             Return
         End If
@@ -2601,11 +2605,11 @@ Class MainWindow
             MountActionButton.IsEnabled = selCount > 0 AndAlso Not _isMounted AndAlso hasWimPath
         End If
 
-        ' ✅ Export Image button: Show when selected OR mounted, always enabled when visible
+        ' Export-Image is supported for WIM/ESD sources, but not FFU.
         If ExportImageButton IsNot Nothing Then
-            Dim shouldShow = ((selCount > 0 AndAlso singleSelected) OrElse showMountedButtons) AndAlso hasWimPath
+            Dim shouldShow = ((selCount > 0 AndAlso singleSelected) OrElse showMountedButtons) AndAlso hasWimPath AndAlso Not IsSelectedFfu
             ExportImageButton.Visibility = If(shouldShow, Visibility.Visible, Visibility.Collapsed)
-            ExportImageButton.IsEnabled = True ' ✅ Always enabled when visible
+            ExportImageButton.IsEnabled = shouldShow
         End If
 
         ' ✅ Export Drivers button: Show when selected OR mounted, always enabled when visible
@@ -2678,6 +2682,11 @@ Class MainWindow
     Private Async Function ExportSelectedImageAsync() As Task
         If Not IsAdministrator() Then
             MessageBox.Show("Administrator privileges required.", "DISM", MessageBoxButton.OK, MessageBoxImage.Warning)
+            Return
+        End If
+
+        If IsSelectedFfu Then
+            MessageBox.Show("FFU images cannot be exported as WIM indexes. Mount the FFU to service it or extract drivers.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
             Return
         End If
 
@@ -4399,7 +4408,7 @@ Class MainWindow
         End If
 
         If String.IsNullOrWhiteSpace(_wimPath) Then
-            MessageBox.Show("Select a WIM image before continuing.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
+            MessageBox.Show("Select an image before continuing.", "DISM", MessageBoxButton.OK, MessageBoxImage.Information)
             Return False
         End If
 
@@ -4410,7 +4419,7 @@ Class MainWindow
             Return False
         End Try
 
-        Dim args = String.Format("/Mount-WIM /WIMFile:""{0}"" /Index:{1} /MountDir:""{2}""", _wimPath, index, mountPath)
+        Dim args = String.Format("/Mount-Image /ImageFile:""{0}"" /Index:{1} /MountDir:""{2}""", _wimPath, index, mountPath)
         If isReadOnlyMount Then
             args &= " /ReadOnly"
         End If
@@ -5128,7 +5137,7 @@ Class MainWindow
         PrepareUnmountProgressUi(initialSize)
 
         Dim commitSwitch As String = If(commit, "/Commit", "/Discard")
-        Dim unmountArgs = $"/Unmount-WIM /MountDir:""" & mountPath & """ " & commitSwitch
+        Dim unmountArgs = $"/Unmount-Image /MountDir:""" & mountPath & """ " & commitSwitch
 
         _mountMonitorCts = New CancellationTokenSource()
         Dim monitorTask = MonitorUnmountDirAsync(mountPath, _mountMonitorCts.Token)
@@ -5324,7 +5333,7 @@ Class MainWindow
         End If
 
         ' Finally, unmount and cleanup mountpoints
-        Await RunDismSimpleAsync($"/Unmount-WIM /MountDir:""{mountPath}"" /Discard")
+        Await RunDismSimpleAsync($"/Unmount-Image /MountDir:""{mountPath}"" /Discard")
         Await RunDismSimpleAsync(" /Cleanup-Mountpoints")
     End Function
 

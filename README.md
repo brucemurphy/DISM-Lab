@@ -1,7 +1,7 @@
 # DISM Lab
 
 ## What is DISM Lab?
-DISM Lab is a Windows application that makes it easy to work with Windows Image (WIM) files and create Windows PE boot media. Whether you need to customize Windows installation images, add drivers, apply updates, or create bootable USB drives, DISM Lab provides a simple visual interface to get the job done.
+DISM Lab is a Windows application that makes it easy to work with WIM, ESD, and FFU images and create Windows PE boot media. Whether you need to customize Windows installation images, add drivers, apply updates, extract drivers, or create bootable USB drives, DISM Lab provides a simple visual interface to get the job done.
 
 ## Download and Install
 
@@ -23,10 +23,10 @@ Accepted updates are downloaded over HTTPS, verified against the release's SHA-2
 ## What Can You Do With It?
 
 ### Working with Windows Images
-- **View WIM Contents** - Open any Windows image file and see all the different versions (indexes) it contains, including their names, descriptions, and sizes
+- **View Image Contents** - Open WIM, ESD, or FFU images and inspect their available image metadata
 - **Mount Images** - Mount a Windows image to your computer so you can modify it, with live progress tracking showing how much data has been copied
 - **Unmount Images** - Safely unmount images with the option to save or discard your changes
-- **Export Images** - Extract specific Windows versions from a WIM file into a new standalone image file
+- **Export Images** - Extract specific Windows versions from a WIM or ESD file into a new standalone WIM file
 
 ### Managing Drivers
 - **Add Drivers to Images** - Select a folder containing driver files and add them to your Windows image - great for pre-loading hardware drivers
@@ -44,8 +44,8 @@ Accepted updates are downloaded over HTTPS, verified against the release's SHA-2
 ## How to Use It
 
 ### Basic Workflow
-1. **Select a WIM file** with the **Browse** button
-2. **Choose what you want to do** - the available buttons change based on whether you've selected an image or mounted one
+1. **Select a WIM, ESD, or FFU file** with the image selection button
+2. **Choose what you want to do** - the available buttons change based on the image format and whether it is mounted
 3. **Follow the prompts** - each operation guides you through folder selection or confirmation dialogs
 4. **Watch the progress** - a live indicator shows you exactly what's happening and how much is complete
 
@@ -93,6 +93,6 @@ The deployment toolkit is embedded in the WinPE image at `X:\Scripts`, so it doe
 ## Tips
 - The green activity light shows when DISM is working
 - Progress percentages appear at the bottom during long operations
-- Mount a WIM file to see operation logs in the lower panel
+- Mount an image to see operation logs in the lower panel
 - The app automatically cleans up mount folders if they're not empty at startup
 - All operations can be cancelled if something goes wrong

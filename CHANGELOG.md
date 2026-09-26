@@ -16,6 +16,23 @@ All notable changes to DISM Lab are recorded here. Releases follow Semantic Vers
 
 - None.
 
+## 1.2.0 - 2026-09-25
+
+### New Features
+
+- Add FFU image selection, metadata inspection, mounting, unmounting, and offline servicing.
+- Support driver extraction from FFU images through temporary read-only mounts.
+- Support adding drivers and Windows update packages to FFU images with commit or discard handling.
+
+### Bug Fixes
+
+- None.
+
+### Other Changes
+
+- Generalize image mount, unmount, startup cleanup, and recovery operations across WIM, ESD, and FFU formats.
+- Hide WIM-only image export actions when an FFU image is selected.
+
 ## 1.1.1 - 2026-08-04
 
 ### New Features

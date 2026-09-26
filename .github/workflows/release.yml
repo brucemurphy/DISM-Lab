@@ -121,10 +121,10 @@ jobs:
             ${{ steps.package.outputs.checksum_path }}
             artifacts/release/release-notes.md
 
-      - name: Create GitHub release
+      - name: Create draft GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET_PATH: ${{ steps.package.outputs.asset_path }}
           CHECKSUM_PATH: ${{ steps.package.outputs.checksum_path }}
-        run: gh release create $env:RELEASE_TAG $env:ASSET_PATH $env:CHECKSUM_PATH --target $env:GITHUB_SHA --title "DISM Lab $env:RELEASE_TAG" --notes-file artifacts/release/release-notes.md
+        run: gh release create $env:RELEASE_TAG $env:ASSET_PATH $env:CHECKSUM_PATH --target $env:GITHUB_SHA --title "DISM Lab $env:RELEASE_TAG" --notes-file artifacts/release/release-notes.md --draft

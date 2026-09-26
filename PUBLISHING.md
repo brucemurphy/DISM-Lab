@@ -22,7 +22,7 @@ DISM Lab is distributed as a compressed, self-contained, single-file Windows x64
 7. Enter Markdown lists for **New Features**, **Bug Fixes**, and **Other Changes**. Use `None.` for an empty category.
 8. Run the workflow and confirm every step succeeds.
 
-The workflow validates that the requested version matches `VersionPrefix`, restores and publishes a compressed single-file executable for `win-x64`, verifies that the publish output contains only `DISM Lab.exe`, creates the ZIP, writes its SHA-256 sidecar, generates categorized release notes, creates the tag, and publishes the GitHub Release.
+The workflow validates that the requested version matches `VersionPrefix`, restores and publishes a compressed single-file executable for `win-x64`, verifies that the publish output contains only `DISM Lab.exe`, creates the ZIP, writes its SHA-256 sidecar, generates categorized release notes, creates the tag, and creates a draft GitHub Release.
 
 ## Release assets
 
@@ -41,15 +41,16 @@ Do not rename assets after publishing. The updater selects assets by their exact
 
 ## Post-publish validation
 
-1. Confirm the release is not marked as draft or prerelease.
+1. Confirm the release is marked as a draft and not as a prerelease.
 2. Confirm the tag, title, ZIP, and checksum all use the same version.
-3. Download both assets from the public release page.
-4. Recalculate the ZIP SHA-256 hash and compare it with the sidecar.
-5. Confirm the ZIP contains only `DISM Lab.exe`, then extract it into a new writable folder.
+3. Download both assets from the draft release using authenticated GitHub access.
+4. Recalculate the downloaded ZIP SHA-256 hash and compare it with the downloaded sidecar.
+5. Confirm the downloaded ZIP contains exactly one entry named `DISM Lab.exe`, then extract it into a new writable folder.
 6. Run `DISM Lab.exe` and approve elevation.
 7. Confirm the title displays the released version.
-8. Open **Settings**, use **Check for updates**, and confirm it reports that the current version is latest.
-9. Keep the GitHub Actions run artifact until release validation is complete.
+8. Publish the validated draft as the latest stable release.
+9. Open **Settings**, use **Check for updates**, and confirm it reports that the current version is latest.
+10. Keep the GitHub Actions run artifact until release validation is complete.
 
 ## Failed workflow or release
 
